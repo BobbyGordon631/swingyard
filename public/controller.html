@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#cfeaff" />
+    <title>Swingyard controller</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23ff6b4a'/></svg>" />
+    <style>
+      :root {
+        --pc: #b9c7e0;
+        --ink: #1d2b4f;
+        --bg: #cfeaff;
+        --sun: #ffd166;
+      }
+      * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        overscroll-behavior: none;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: ui-rounded, 'SF Pro Rounded', system-ui, sans-serif;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+        touch-action: none;
+      }
+      #pad {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: calc(12px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
+        transition: background 0.15s;
+      }
+      #pad.flash {
+        background: var(--pc);
+        transition: none;
+      }
+      #top {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 54px;
+      }
+      #badge {
+        display: grid;
+        place-items: center;
+        width: 54px;
+        height: 54px;
+        border-radius: 16px;
+        background: var(--pc);
+        color: var(--ink);
+        font-size: 22px;
+        font-weight: 900;
+      }
+      #info {
+        flex: 1;
+        min-width: 0;
+      }
+      #status {
+        font-size: 18px;
+        font-weight: 800;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #diag {
+        font-size: 12px;
+        color: #5f6f94;
+      }
+      .btn {
+        display: grid;
+        place-items: center;
+        border-radius: 28px;
+        background: #fff;
+        border: 4px solid #fff;
+        box-shadow: 0 6px 0 rgba(29, 43, 79, 0.14);
+        color: var(--ink);
+        font-weight: 900;
+        touch-action: none;
+      }
+      .btn.down {
+        background: var(--pc);
+        border-color: var(--pc);
+        color: var(--ink);
+        box-shadow: none;
+        transform: translateY(4px) scale(0.98);
+      }
+      #btn-pause {
+        width: 54px;
+        height: 54px;
+        border-radius: 16px;
+        font-size: 18px;
+      }
+      #mid {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        min-height: 190px;
+      }
+      #dpad {
+        display: grid;
+        grid-template-columns: repeat(3, 62px);
+        grid-template-rows: repeat(3, 62px);
+        gap: 4px;
+      }
+      #dpad .btn {
+        border-radius: 16px;
+        font-size: 26px;
+      }
+      #dpad .up { grid-area: 1 / 2; }
+      #dpad .left { grid-area: 2 / 1; }
+      #dpad .right { grid-area: 2 / 3; }
+      #dpad .down { grid-area: 3 / 2; }
+      #dpad .hub {
+        grid-area: 2 / 2;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.45);
+        margin: 10px;
+      }
+      #btn-a {
+        width: 112px;
+        height: 112px;
+        border-radius: 50%;
+        font-size: 44px;
+      }
+      #row2 {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      #row2 p {
+        flex: 1;
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.4;
+        color: #5f6f94;
+      }
+      #btn-center {
+        padding: 10px 14px;
+        border-radius: 16px;
+        font-size: 15px;
+        white-space: nowrap;
+      }
+      #btn-hold {
+        text-align: center;
+        flex: 1;
+        font-size: 34px;
+        letter-spacing: 0.04em;
+      }
+      #btn-hold small {
+        display: block;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0;
+        opacity: 0.7;
+      }
+      #connect {
+        position: fixed;
+        inset: 0;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        padding: 24px;
+        background: var(--bg);
+        text-align: center;
+      }
+      #connect h1 {
+        margin: 0;
+        font-size: 40px;
+        font-weight: 900;
+        color: #fff;
+        text-shadow: 0 4px 0 var(--ink);
+      }
+      #connect h1 span {
+        color: var(--sun);
+      }
+      #btn-connect {
+        width: min(80vw, 340px);
+        padding: 34px 10px;
+        border: 0;
+        border-radius: 28px;
+        background: #ff6b4a;
+        box-shadow: 0 8px 0 rgba(29, 43, 79, 0.2);
+        color: #fff;
+        font: inherit;
+        font-size: 30px;
+        font-weight: 900;
+      }
+      #room {
+        width: min(80vw, 340px);
+        padding: 14px;
+        border: 3px solid #d6deec;
+        border-radius: 18px;
+        font: inherit;
+        font-size: 28px;
+        font-weight: 900;
+        letter-spacing: 0.2em;
+        text-align: center;
+        text-transform: uppercase;
+        color: #1d2b4f;
+      }
+      #connect p {
+        margin: 0;
+        max-width: 340px;
+        font-size: 14px;
+        line-height: 1.5;
+        color: #5f6f94;
+      }
+      #error {
+        color: #c0392b !important;
+        font-weight: 700;
+      }
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="connect">
+      <h1>Swing<span>yard</span></h1>
+      <input id="room" class="hidden" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ROOM CODE" aria-label="Room code shown on the game screen" />
+      <button id="btn-connect">Tap to connect</button>
+      <p id="error" class="hidden"></p>
+      <p>Allow motion access when asked. Hold the phone firmly — a wrist strap or a tight grip is a good idea before you swing.</p>
+    </div>
+
+    <div id="pad">
+      <div id="top">
+        <div id="badge">–</div>
+        <div id="info">
+          <div id="status">Connecting…</div>
+          <div id="diag"></div>
+        </div>
+        <div id="btn-pause" class="btn" data-bit="4">II</div>
+      </div>
+      <div id="mid">
+        <div id="dpad">
+          <div class="btn up" data-bit="8">▲</div>
+          <div class="btn left" data-bit="32">◀</div>
+          <div class="hub"></div>
+          <div class="btn right" data-bit="64">▶</div>
+          <div class="btn down" data-bit="16">▼</div>
+        </div>
+        <div id="btn-a" class="btn" data-bit="2">A</div>
+      </div>
+      <div id="row2">
+        <div id="btn-center" class="btn" data-bit="128">⟳ Center</div>
+        <p>Menus: arrows + <b>A</b>, big button = back. Point at the TV and tap <b>Center</b> if aiming drifts.</p>
+      </div>
+      <div id="btn-hold" class="btn" data-bit="1"><div>HOLD<small>trigger</small></div></div>
+    </div>
+
+    <script src="vendor/peerjs/peerjs.min.js"></script>
+    <script type="module">
+      const SEND_HZ = 120; // upper limit; most phones deliver motion at 60 Hz
+      const $ = (id) => document.getElementById(id);
+      const COLORS = ['#ff6b4a', '#2ec4b6', '#ffd166', '#9b5de5'];
+      const isIOS = typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function';
+
+      // A stable id lets the server give this phone the same player slot after a reconnect.
+      let id;
+      try {
+        id = sessionStorage.getItem('swingyard-id');
+        if (!id) sessionStorage.setItem('swingyard-id', (id = Math.random().toString(36).slice(2) + Date.now().toString(36)));
+      } catch {
+        id = Math.random().toString(36).slice(2);
+      }
+
+      // ---- link to the game screen ----
+      // Online (e.g. kksolve.com/swingyard): connect straight to the screen's room over WebRTC.
+      // LAN (`npm start`): WebSocket to the Node server on the computer.
+      const cleanRoom = (s) => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+      let room = cleanRoom(new URLSearchParams(location.search).get('room'));
+      let lanServer = false;
+      const onlineBuild = !!document.querySelector('meta[name="swingyard-mode"][content="online"]');
+      if (!room) {
+        // No room in the link: are we on the LAN server, or should the player type the code?
+        (onlineBuild ? Promise.reject() : fetch('api/info', { cache: 'no-store' }))
+          .then((r) => (lanServer = r.ok && (r.headers.get('content-type') || '').includes('json')))
+          .catch(() => {})
+          .finally(() => {
+            if (!lanServer) {
+              $('room').classList.remove('hidden');
+              $('room').value = sessionStorage.getItem('swingyard-room-code') || '';
+            }
+          });
+      }
+
+      /** WebSocket-shaped wrapper around two WebRTC data channels (reliable control, unreliable motion). */
+      class PeerSocket {
+        constructor(code) {
+          this.readyState = 0;
+          this.onopen = this.onmessage = this.onclose = this.onerror = null;
+          this.notFound = false;
+          const peer = new window.Peer({ debug: 0 });
+          this.peer = peer;
+          this.m = null;
+          const fail = () => this.close();
+          peer.on('open', () => {
+            const target = `swingyard-${code.toLowerCase()}`;
+            const ctl = peer.connect(target, { label: 'ctl', reliable: true, serialization: 'json', metadata: { id, ios: isIOS } });
+            this.ctl = ctl;
+            ctl.on('open', () => {
+              this.readyState = 1;
+              if (this.onopen) this.onopen();
+              // Motion: unordered and never re-sent - a late sample is worse than a lost one.
+              const m = peer.connect(target, { label: 'm', reliable: false, serialization: 'raw', metadata: { id } });
+              m.on('open', () => (this.m = m));
+              m.on('close', () => this.m === m && (this.m = null));
+            });
+            ctl.on('data', (d) => this.onmessage && this.onmessage({ data: typeof d === 'string' ? d : JSON.stringify(d) }));
+            ctl.on('close', fail);
+            ctl.on('error', fail);
+          });
+          peer.on('error', (err) => {
+            if (err.type === 'peer-unavailable') this.notFound = true;
+            if (this.readyState !== 1 || err.type === 'peer-unavailable') fail();
+          });
+          // Losing the broker does not matter once the direct channel is up.
+          peer.on('disconnected', () => this.readyState !== 1 && fail());
+          this._timer = setTimeout(() => this.readyState === 0 && fail(), 15000);
+        }
+        send(text) {
+          if (this.readyState !== 1) return;
+          if (this.m && this.m.open && text.startsWith('{"t":"m"')) this.m.send(text);
+          else if (this.ctl.open) this.ctl.send(JSON.parse(text));
+        }
+        close() {
+          if (this.readyState === 3) return;
+          this.readyState = 3;
+          clearTimeout(this._timer);
+          try {
+            this.peer.destroy();
+          } catch {
+            /* gone */
+          }
+          if (this.onclose) this.onclose();
+        }
+      }
+
+      let ws = null;
+      let buttons = 0;
+      let lastSent = 0;
+      let started = false;
+      let motionCount = 0;
+      let gameStatus = '';
+      let slot = null;
+      let screenOn = true;
+      let rtt = null;
+      let orient = null; // latest deviceorientation [alpha, beta, gamma], degrees
+      let orientCount = 0;
+
+      const round = (v, k) => (v == null ? 0 : Math.round(v * k) / k);
+      const vec = (o, k) => (o && o.x != null ? [round(o.x, k), round(o.y, k), round(o.z, k)] : null);
+
+      function send(obj) {
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+      }
+
+      // ---- motion ----
+      function onMotion(e) {
+        motionCount++;
+        const now = performance.now();
+        if (now - lastSent < 1000 / SEND_HZ - 1) return;
+        lastSent = now;
+        const r = e.rotationRate;
+        send({
+          t: 'm',
+          ts: Math.round(now * 10) / 10, // phone clock, so the game can undo network jitter
+          a: vec(e.acceleration, 100), // m/s^2, gravity removed (null on some Android phones)
+          g: vec(e.accelerationIncludingGravity, 100), // m/s^2
+          r: r && r.alpha != null ? [round(r.alpha, 10), round(r.beta, 10), round(r.gamma, 10)] : null, // deg/s
+          o: orient, // full 3D orientation, degrees
+          b: buttons,
+        });
+      }
+
+      function onOrientation(e) {
+        if (e.beta == null) return;
+        orientCount++;
+        orient = [round(e.alpha || 0, 10), round(e.beta, 10), round(e.gamma || 0, 10)];
+      }
+
+      // ---- buttons ----
+      for (const el of document.querySelectorAll('.btn')) {
+        const bit = Number(el.dataset.bit);
+        const set = (down) => {
+          const next = down ? buttons | bit : buttons & ~bit;
+          if (next === buttons) return;
+          buttons = next;
+          el.classList.toggle('down', down);
+          send({ t: 'm', b: buttons }); // button edges go out immediately
+        };
+        el.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          try {
+            el.setPointerCapture(e.pointerId);
+          } catch {}
+          set(true);
+        });
+        for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+          el.addEventListener(type, () => set(false));
+        }
+      }
+      document.addEventListener('contextmenu', (e) => e.preventDefault());
+      document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+
+      // ---- wake lock ----
+      let wakeLock = null;
+      async function keepAwake() {
+        try {
+          if ('wakeLock' in navigator && document.visibilityState === 'visible') {
+            wakeLock = await navigator.wakeLock.request('screen');
+          }
+        } catch {
+          /* low battery mode etc. */
+        }
+      }
+      document.addEventListener('visibilitychange', () => {
+        if (started && document.visibilityState === 'visible') {
+          keepAwake();
+          if (!ws || ws.readyState > 1) connect();
+        }
+      });
+
+      // ---- socket ----
+      function renderStatus() {
+        const open = ws && ws.readyState === 1;
+        $('status').textContent = !open
+          ? 'Reconnecting…'
+          : slot === null
+            ? 'Joining…'
+            : !screenOn
+              ? 'Open the game on the big screen'
+              : gameStatus || `Player ${slot + 1} connected`;
+      }
+
+      function connect() {
+        if (room) ws = new PeerSocket(room);
+        else {
+          const url = new URL(`ws?role=controller&id=${id}&ios=${isIOS ? 1 : 0}`, location.href);
+          url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+          ws = new WebSocket(url);
+        }
+        const mine = ws;
+        ws.onopen = renderStatus;
+        ws.onmessage = (ev) => {
+          let msg;
+          try {
+            msg = JSON.parse(ev.data);
+          } catch {
+            return;
+          }
+          if (msg.t === 'slot') {
+            slot = msg.p;
+            screenOn = msg.screen;
+            $('badge').textContent = `P${slot + 1}`;
+            document.documentElement.style.setProperty('--pc', COLORS[slot]);
+            send({ t: 'm', b: buttons });
+          } else if (msg.t === 'full') {
+            slot = null;
+            gameStatus = '';
+            started = false;
+            $('error').textContent = 'The game already has 4 players.';
+            $('error').classList.remove('hidden');
+            $('connect').classList.remove('hidden');
+          } else if (msg.t === 'pong') {
+            rtt = Math.round(performance.now() - msg.ts);
+            return;
+          } else if (msg.t === 'screen') {
+            screenOn = msg.on;
+          } else if (msg.t === 'status') {
+            gameStatus = msg.text || '';
+          } else if (msg.t === 'vibrate') {
+            if (navigator.vibrate) navigator.vibrate(msg.ms); // not available on iPhone
+            $('pad').classList.add('flash');
+            setTimeout(() => $('pad').classList.remove('flash'), 90);
+          }
+          renderStatus();
+        };
+        ws.onclose = () => {
+          if (mine !== ws) return;
+          renderStatus();
+          if (mine.notFound && slot === null) {
+            // Wrong code, or the game screen is closed: let the player check the code.
+            $('status').textContent = `No game with room code ${room} — check the code on the screen`;
+          }
+          if (started) setTimeout(connect, mine.notFound ? 2500 : 1000);
+        };
+        ws.onerror = () => {};
+      }
+
+      // ---- start (must run inside a tap so iOS shows the motion permission prompt) ----
+      $('btn-connect').addEventListener('click', async () => {
+        const err = $('error');
+        err.classList.add('hidden');
+        if (!window.isSecureContext) {
+          err.textContent = 'This page must be opened over https:// for motion sensors to work. Scan the QR code on the game screen.';
+          err.classList.remove('hidden');
+          return;
+        }
+        if (!room && !lanServer) {
+          room = cleanRoom($('room').value);
+          if (room.length < 4) {
+            err.textContent = 'Type the room code shown on the game screen.';
+            err.classList.remove('hidden');
+            return;
+          }
+          sessionStorage.setItem('swingyard-room-code', room);
+        }
+        if (room && typeof window.Peer !== 'function') {
+          err.textContent = 'Could not load the connection library — check your internet connection and reload.';
+          err.classList.remove('hidden');
+          return;
+        }
+        let motionOk = typeof DeviceMotionEvent !== 'undefined';
+        if (isIOS) {
+          // Ask for both inside the tap (iOS shows one "Motion & Orientation" prompt).
+          const orientAsk =
+            typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'
+              ? DeviceOrientationEvent.requestPermission().catch(() => 'denied')
+              : Promise.resolve('granted');
+          try {
+            motionOk = (await DeviceMotionEvent.requestPermission()) === 'granted';
+          } catch {
+            motionOk = false;
+          }
+          await orientAsk; // optional: tilt still works without it
+          if (!motionOk) {
+            err.textContent =
+              'Motion access was denied. Close this tab completely, reopen the link and tap Allow. (If it never asks: Settings → Apps → Safari → Motion & Orientation Access.)';
+            err.classList.remove('hidden');
+            return;
+          }
+        }
+        if (motionOk) {
+          window.addEventListener('devicemotion', onMotion);
+          window.addEventListener('deviceorientation', onOrientation);
+        }
+        started = true;
+        $('connect').classList.add('hidden');
+        keepAwake();
+        connect();
+      });
+
+      // ---- diagnostics line ----
+      setInterval(() => {
+        if (!started) return;
+        const hz = motionCount;
+        const ohz = orientCount;
+        motionCount = 0;
+        orientCount = 0;
+        const link = rtt == null ? '' : ` · link ${rtt} ms${rtt > 60 ? ' (slow Wi-Fi)' : ''}`;
+        $('diag').textContent = hz > 0 ? `motion ${hz} Hz · ${ohz > 0 ? '3D' : 'tilt only'}${link} · ${wakeLock && !wakeLock.released ? 'stays awake' : 'keep screen on'}` : `No motion data from this device — buttons only${link}`;
+        send({ t: 'ping', ts: performance.now() });
+      }, 1000);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Swingyard</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%23ff6b4a'/><circle cx='11' cy='12' r='2.5' fill='%2314213d'/><circle cx='18' cy='10' r='2.5' fill='%2314213d'/><circle cx='17' cy='17' r='2.5' fill='%2314213d'/></svg>" />
+    <link rel="stylesheet" href="css/game.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./vendor/three/three.module.js",
+          "cannon-es": "./vendor/cannon-es/cannon-es.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+
+    <div id="ui">
+      <!-- Main menu -->
+      <section id="menu" class="hidden">
+        <header>
+          <h1>Swing<span>yard</span></h1>
+          <div id="badges"></div>
+        </header>
+        <div id="sport-cards"></div>
+        <div id="setup" class="hidden">
+          <div id="setup-title"></div>
+          <div class="pills" id="setup-pills"></div>
+        </div>
+        <p class="hint" id="menu-hint"></p>
+      </section>
+
+      <!-- Phone lobby -->
+      <aside id="lobby" class="hidden">
+        <h3>Play with your phone</h3>
+        <div id="qr-wrap"><img id="qr" alt="QR code for the phone controller" /></div>
+        <code id="controller-url"></code>
+        <ol class="steps" id="lobby-steps"></ol>
+        <p class="note dim">No phone? Keyboard and mouse work everywhere.</p>
+      </aside>
+
+      <!-- In-game HUD (filled by the active game) -->
+      <div id="hud"></div>
+      <div id="phones" class="hidden"></div>
+
+      <!-- Pause -->
+      <div id="pause" class="overlay hidden">
+        <div class="panel">
+          <h2>Paused</h2>
+          <div class="choices"></div>
+          <p class="hint">Arrow pad or arrow keys to choose · A / Enter to confirm</p>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div id="results" class="overlay hidden">
+        <div class="panel">
+          <h2 id="results-title"></h2>
+          <div id="results-rows"></div>
+          <div class="choices"></div>
+          <p class="hint">Arrow pad or arrow keys to choose · A / Enter to confirm</p>
+        </div>
+      </div>
+
+      <div id="soundhint" class="hidden">Click or press any key for sound</div>
+      <div id="toast"></div>
+      <div id="fade"></div>
+      <canvas id="debug" class="hidden"></canvas>
+    </div>
+
+    <script src="vendor/qrcode/qrcode.js"></script>
+    <script src="vendor/peerjs/peerjs.min.js"></script>
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>
