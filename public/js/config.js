@@ -126,8 +126,14 @@ export const CONFIG = {
     aimRange: 0.46, // max distance from lane centre (m); the lane is 1.05 m wide
   },
 
-  // ---- Tennis (first person, racket follows the phone) ----
+  // ---- Tennis (racket follows the phone) ----
   tennis: {
+    // 'behind' = the camera sits high behind your baseline and you see your player swing (the classic
+    // living-room tennis view); 'first' = first person, through your player's eyes.
+    view: 'behind',
+    behindHeight: 8, // m above the court
+    behindBack: 9.5, // m behind your player (or the baseline, whichever is further back)
+    behindFov: 48, // degrees, vertical
     gamesPerSet: 3,
     setsToWin: 1,
     // Racket: the head is this far from the shoulder; contact is checked against the moving racket.

@@ -1,20 +1,36 @@
-// Tennis, first person. Your racket follows the phone 1:1 (the phone is the handle, the screen is the
-// strings), your player runs to the ball by itself, and the ball is real physics: drag, spin, a
-// spin-dependent bounce. Where the ball goes comes from the racket face and the racket's speed when
-// it meets the ball. CONFIG.tennis.assist pulls near misses back toward the court.
+// Tennis. The camera sits high behind your baseline (CONFIG.tennis.view = 'behind', the classic
+// living-room tennis view) or in your eyes ('first'). Your racket follows the phone 1:1 (the phone is the
+// handle, the screen is the strings), your player runs to the ball by itself, and the ball is real
+// physics: drag, spin, a spin-dependent bounce. Where the ball goes comes from the racket face and the
+// racket's speed when it meets the ball. CONFIG.tennis.assist pulls near misses back toward the court.
 //
 // Serving: flick the phone up to toss the ball, then swing up and through as it drops into reach.
 // Without an orientation sensor (or on the keyboard) hitting falls back to timing: swing as the
 // ball arrives (early = cross-court, late = down the line).
 import * as THREE from 'three';
 import { CONFIG } from '../../config.js';
-import { createCharacter, addProp } from '../../characters.js';
-import { BaseGame, outdoorScene, blobShadow, patch, flatMat, addTree, addGrandstand, addBanner, renderViews, makeTrail, lerp, clamp, rand, ease, DIFFICULTY } from '../common.js';
+import { createCharacter, addProp, react } from '../../characters.js';
+import { BaseGame, outdoorScene, blobShadow, patch, flatMat, addTree, addGrandstand, addBanner, renderViews, makeTrail, crowdFill, lerp, clamp, rand, ease, DIFFICULTY } from '../common.js';
 import { TennisMatch } from './scoring.js';
 import { COURT, BALL_R, stepAir, bounce, predictLanding, predictPath, solveShot, serviceBox, inBox, spinFor } from './physics.js';
 
 const { LEN, WID, NET } = COURT;
 const SUBSTEPS = 6;
+// Players are drawn a little larger than life so they read from the camera behind the baseline, and the
+// racket's shoulder is the character's own shoulder, so the 1:1 racket sits in the Yardling's hand.
+const SC = 1.3;
+const SH_X = 0.31 * SC;
+const SH_Y = 0.95 * SC;
+const ARM_LEN = 0.44 * SC; // shoulder to hand on the scaled character
+// Scratch objects, so the per-frame code allocates nothing.
+const DOWN = new THREE.Vector3(0, -1, 0);
+const _arm = new THREE.Vector3();
+const _bx = new THREE.Vector3();
+const _by = new THREE.Vector3();
+const _bz = new THREE.Vector3();
+const _m4 = new THREE.Matrix4();
+const _v1 = new THREE.Vector3();
+const _v2 = new THREE.Vector3();
 
 export class TennisGame extends BaseGame {
   constructor(o) {
@@ -64,11 +80,12 @@ export class TennisGame extends BaseGame {
       addTree(scene, -15 + i * 5, -29 - (i % 2) * 3, 1.8);
       addTree(scene, -15 + i * 5, 29 + (i % 2) * 3, 1.8);
     }
+    const fill = crowdFill(this.skill); // more fans as your Skill Level grows
     this.crowd = [
-      addGrandstand(scene, { x: -10.5, z: 0, rotY: Math.PI / 2, width: 26, rows: 6 }),
-      addGrandstand(scene, { x: 10.5, z: 0, rotY: -Math.PI / 2, width: 26, rows: 6 }),
-      addGrandstand(scene, { x: 0, z: -19.5, rotY: 0, width: 18, rows: 5 }),
-      addGrandstand(scene, { x: 0, z: 19.5, rotY: Math.PI, width: 18, rows: 5 }),
+      addGrandstand(scene, { x: -10.5, z: 0, rotY: Math.PI / 2, width: 26, rows: 6, fill }),
+      addGrandstand(scene, { x: 10.5, z: 0, rotY: -Math.PI / 2, width: 26, rows: 6, fill }),
+      addGrandstand(scene, { x: 0, z: -19.5, rotY: 0, width: 18, rows: 5, fill }),
+      addGrandstand(scene, { x: 0, z: 19.5, rotY: Math.PI, width: 18, rows: 5, fill }),
     ];
     this.hype = 0.3;
     for (const z of [-17.4, 17.4]) {
@@ -78,9 +95,11 @@ export class TennisGame extends BaseGame {
       addBanner(scene, 'SWINGYARD  OPEN', { x: 0, y: 0.5, z: z + (z < 0 ? 0.16 : -0.16), rotY: z < 0 ? 0 : Math.PI, width: 9, height: 0.8, bg: '#1f5fae' });
     }
 
+    this.behind = this.cfg.view !== 'first';
     this.sides = [0, 1].map((i) => {
       const sign = i === 0 ? 1 : -1;
       const char = createCharacter(this.color(i));
+      char.group.scale.setScalar(SC);
       const prop = addProp(char, 'racket', 0xffffff);
       char.group.rotation.y = i === 0 ? 0 : Math.PI;
       scene.add(char.group);
@@ -88,13 +107,16 @@ export class TennisGame extends BaseGame {
       if (this.isHuman(i)) s.fp = this._firstPersonRacket(i);
       return s;
     });
-    this.ballMesh = new THREE.Mesh(new THREE.SphereGeometry(BALL_R * 1.5, 16, 12), new THREE.MeshStandardMaterial({ color: 0xe8ff3a, roughness: 0.6 }));
+    // From behind the baseline the ball is far away: draw it bigger (and glowing a touch) so it always
+    // reads, with a dark shadow underneath that tells you where it is over the court.
+    const ballScale = this.behind ? 2.4 : 1.5;
+    this.ballMesh = new THREE.Mesh(new THREE.SphereGeometry(BALL_R * ballScale, 16, 12), new THREE.MeshStandardMaterial({ color: 0xe8ff3a, roughness: 0.6, emissive: 0x4a5a00, emissiveIntensity: this.behind ? 0.6 : 0 }));
     this.ballMesh.castShadow = true;
-    this.ballShadow = blobShadow(0.07, 0.35);
+    this.ballShadow = blobShadow(this.behind ? 0.1 : 0.07, this.behind ? 0.45 : 0.35);
     scene.add(this.ballMesh, this.ballShadow);
-    this.trail = makeTrail(scene, { color: 0xf4ff9a, size: BALL_R * 1.3, spacing: 0.18, opacity: 0.35 });
+    this.trail = makeTrail(scene, { color: 0xf4ff9a, size: BALL_R * (this.behind ? 2 : 1.3), spacing: 0.18, opacity: 0.35 });
     this.cams = [0, 1].map(() => {
-      const c = new THREE.PerspectiveCamera(72, 1, 0.03, 900);
+      const c = new THREE.PerspectiveCamera(this.behind ? this.cfg.behindFov : 72, 1, 0.03, 900);
       c.userData.look = new THREE.Vector3(0, 1, 0);
       return c;
     });
@@ -294,8 +316,14 @@ export class TennisGame extends BaseGame {
     };
     const k = (grip * 1.5) / BALL_R;
     const w = { x: (n.y * t.z - n.z * t.y) * k, y: 0, z: (n.x * t.y - n.y * t.x) * k };
-    this.sfx.pop(clamp(Math.hypot(vr.x, vr.y, vr.z) / 25, 0.2, 1));
+    const swingSpeed = Math.hypot(vr.x, vr.y, vr.z);
+    this.sfx.pop(clamp(swingSpeed / 25, 0.2, 1));
     this.vibrate(side, 45);
+    // A big swing thumps the camera and gets an "ooh" from the stands.
+    if (swingSpeed > 14) {
+      this.feel.shake(clamp((swingSpeed - 14) / 20, 0.1, 0.4));
+      if (swingSpeed > 20) this.sfx.crowdOoh(0.4);
+    }
     const serve = this.state === 'toss';
     const rate = this._launch(side, vOut, w, { serve });
     const kmh = Math.round(Math.hypot(this.ball.v.x, this.ball.v.y, this.ball.v.z) * 3.6);
@@ -392,12 +420,12 @@ export class TennisGame extends BaseGame {
     if (!pick) return;
     // Stand so the contact point sits at arm + racket length from the right shoulder.
     const reach = this.cfg.armLength * 0.85 + this.cfg.racketLength * 0.7;
-    const V = 1.42 - pick.p.y;
+    const V = SH_Y - pick.p.y;
     const F = 0.3;
     const L = Math.sqrt(Math.max(0.04, reach * reach - V * V - F * F));
     const rs = s.sign; // +x is side 0's right
-    const fore = pick.p.x - rs * (0.22 + L);
-    const back = pick.p.x - rs * 0.22 + rs * L;
+    const fore = pick.p.x - rs * (SH_X + L);
+    const back = pick.p.x - rs * SH_X + rs * L;
     const forehand = Math.abs(fore - s.x) <= Math.abs(back - s.x) + 0.6;
     s.target = { x: forehand ? fore : back, z: pick.p.z + s.sign * F };
     s.plan = { at: this.time + pick.t, p: pick.p, forehand };
@@ -416,19 +444,42 @@ export class TennisGame extends BaseGame {
       : result === 'set' ? `Set — ${names[winner]}`
       : result === 'game' ? `Game — ${names[winner]}`
       : this.match.call(names);
-    this.banner(reason ? `${reason}! ${text}` : text, 2, result === 'point' ? 'small' : '');
-    if (result !== 'point') this.sfx.spare();
-    else this.sfx.good();
+    const wc = this.sides[winner].char;
+    const lc = this.sides[1 - winner].char;
+    if (result === 'point') {
+      this.banner(reason ? `${reason}! ${text}` : text, 2, 'small');
+      this.sfx.good();
+    } else {
+      // Games, sets and the match get the big bouncing call.
+      const word = result === 'match' ? 'MATCH!' : result === 'set' ? 'SET!' : 'GAME!';
+      this.feel.celebrate(word, { color: this.css(winner), size: result === 'game' ? 'mid' : 'big', sub: text, confetti: result === 'match' && this.isHuman(winner) ? 120 : 0, seconds: 2.1 });
+      this.sfx.spare();
+      this.sfx.sparkle(result === 'match' ? 3 : result === 'set' ? 2 : 0);
+    }
+    if (result === 'match') this.feel.slowmo(1.4, 0.3); // let the last ball hang in the air
+    // The crowd is on the human's side (and claps politely for a CPU winner).
+    const humanWon = this.isHuman(winner);
+    const big = result !== 'point';
+    if (humanWon) this.moment(big ? 'great' : 'good', { winner: wc, loser: this.isHuman(1 - winner) ? lc : null, intensity: big ? 0.9 : 0.55 });
+    else {
+      this.sfx.applause(big ? 0.4 : 0.2);
+      if (reason) this.sfx.crowdGroan(0.45);
+      react(lc, 'sad');
+      react(wc, big ? 'cheer' : 'pump');
+    }
     this.hype = 1.5;
     if (this.isHuman(winner)) this.vibrate(winner, [50, 40, 50]);
     this._hud();
-    this.after(2.3, () => {
+    this.after(result === 'match' ? 2.8 : 2.3, () => {
       if (this.match.winner === null) return this._startPoint();
       const w = this.match.winner;
       const line = (i) => this.match.setScores.map((s) => s[i]).join(' ');
+      // Skill margin: how many more games you won than lost, over the whole match.
+      const games = this.match.setScores.reduce((acc, s) => [acc[0] + s[0], acc[1] + s[1]], [0, 0]);
+      const margin = clamp(Math.abs(games[0] - games[1]) / (this.cfg.gamesPerSet * Math.max(1, this.match.setScores.length)), 0, 1);
       this.finish(
         [w, 1 - w].map((i) => ({ name: names[i], css: this.css(i), score: line(i) })),
-        { unit: this.match.setScores.length > 1 ? 'sets' : 'games', title: `${names[w]} wins!` },
+        { unit: this.match.setScores.length > 1 ? 'sets' : 'games', title: `${names[w]} wins!`, skill: this.versus(w, margin) },
       );
     });
   }
@@ -453,7 +504,7 @@ export class TennisGame extends BaseGame {
     const point = rot(p.basis.point);
     const right = rot(p.basis.right);
     const normal = rot(p.basis.normal);
-    const sh = { x: s.x + 0.22 * f, y: 1.42, z: s.z };
+    const sh = { x: s.x + SH_X * f, y: SH_Y, z: s.z };
     const a = this.cfg.armLength * 0.85;
     const hand = { x: sh.x + point.x * a, y: sh.y + point.y * a - 0.08, z: sh.z + point.z * a };
     const r = this.cfg.racketLength * 0.75;
@@ -593,15 +644,24 @@ export class TennisGame extends BaseGame {
       // pose
       const g = s.char.group;
       g.position.set(s.x, Math.abs(Math.sin(this.time * 9)) * (dist > 0.3 && this.state === 'rally' ? 0.06 : 0), s.z);
-      if (s.fp && s.frame && s.frame.real) {
-        // Other player's view of a 1:1 racket: aim the arm along the phone.
-        const p = s.frame.point;
-        s.char.armR.rotation.x = clamp(1.2 + Math.asin(clamp(p.y, -1, 1)), -1, 3);
-        s.char.armR.rotation.z = clamp(-p.x * s.sign * 1.2, -1.4, 1.4);
+      const oneToOne = !!(s.fp && s.frame && s.frame.real);
+      if (oneToOne) {
+        // Reach the Yardling's arm from its shoulder to the 1:1 racket's grip, so the racket is in its hand.
+        // (Into the character's own frame: side 1 is turned round, and the whole body is scaled by SC.)
+        const h = s.frame;
+        _arm.set((h.hand.x - h.sh.x) * s.sign, h.hand.y - h.sh.y, (h.hand.z - h.sh.z) * s.sign);
+        const len = _arm.length() || 1;
+        s.char.armR.quaternion.setFromUnitVectors(DOWN, _arm.multiplyScalar(1 / len));
+        s.char.armR.scale.y = clamp(len / ARM_LEN, 0.6, 1.4);
       } else {
+        s.char.armR.scale.y = 1;
         s.char.armR.rotation.x = s.swingT < 0.28 ? lerp(-1.1, 2.3, s.swingT / 0.28) : lerp(s.char.armR.rotation.x, 0.5, ease(dt, 9));
+        s.char.armR.rotation.y = 0;
         s.char.armR.rotation.z = 0.5;
       }
+      // One racket per player: the 1:1 racket when the phone drives it, else the one in the hand.
+      s.prop.visible = !oneToOne;
+      s.oneToOne = oneToOne;
       if (s.fp) this._placeFp(s);
     }
 
@@ -615,12 +675,8 @@ export class TennisGame extends BaseGame {
   _placeFp(s) {
     const { group, arm } = s.fp;
     const h = s.frame && s.frame.real ? s.frame : this._headFor(s);
-    const m = new THREE.Matrix4().makeBasis(
-      new THREE.Vector3(h.right.x, h.right.y, h.right.z),
-      new THREE.Vector3(h.point.x, h.point.y, h.point.z),
-      new THREE.Vector3(h.normal.x, h.normal.y, h.normal.z),
-    );
-    group.quaternion.setFromRotationMatrix(m);
+    _m4.makeBasis(_bx.set(h.right.x, h.right.y, h.right.z), _by.set(h.point.x, h.point.y, h.point.z), _bz.set(h.normal.x, h.normal.y, h.normal.z));
+    group.quaternion.setFromRotationMatrix(_m4);
     group.position.set(h.hand.x, h.hand.y, h.hand.z);
     if (!h.real) {
       // No orientation sensor: a canned swing so the racket still looks alive.
@@ -634,12 +690,29 @@ export class TennisGame extends BaseGame {
     const b = this.ball;
     for (const s of this.sides) {
       const cam = this.cams[s.i];
+      const myToss = this.state === 'toss' && this.match.server === s.i;
+      if (this.behind) {
+        // High behind your baseline, the whole court in view, your player in the lower middle. The camera
+        // drifts with you (not locked on, so running doesn't swing the world around) and tips up a
+        // little to follow your toss.
+        const ud = cam.userData;
+        const c = this.cfg;
+        if (ud.x === undefined) ud.x = s.x;
+        ud.x = lerp(ud.x, s.x * 0.6, ease(dt, 2.5));
+        const back = Math.max(Math.abs(s.z), LEN / 2) + c.behindBack;
+        cam.position.set(ud.x, c.behindHeight, s.sign * back);
+        // Aim at your side of the net, so your player stands in the lower third, clear of the HUD.
+        _v1.set(ud.x * 0.5, myToss ? 1.4 : 0, s.sign * 8);
+        ud.look.lerp(_v1, ease(dt, 4));
+        cam.lookAt(ud.look);
+        continue;
+      }
       cam.position.set(s.x, 1.62, s.z + s.sign * 0.32);
-      const opp = new THREE.Vector3(0, 0.7, -s.sign * (LEN / 2));
-      const ballV = new THREE.Vector3(b.p.x, b.p.y, b.p.z);
+      _v1.set(0, 0.7, -s.sign * (LEN / 2));
+      _v2.set(b.p.x, b.p.y, b.p.z);
       // Your head follows the ball a little, like it would.
-      const want = opp.lerp(ballV, this.state === 'toss' && this.match.server === s.i ? 0.85 : 0.35);
-      cam.userData.look.lerp(want, ease(dt, 5));
+      _v1.lerp(_v2, myToss ? 0.85 : 0.35);
+      cam.userData.look.lerp(_v1, ease(dt, 5));
       cam.lookAt(cam.userData.look);
     }
   }
@@ -648,10 +721,11 @@ export class TennisGame extends BaseGame {
     const humans = [0, 1].filter((i) => this.isHuman(i));
     const show = (i) => () => {
       for (const s of this.sides) {
-        s.char.group.visible = s.i !== i;
+        // First person hides your own body (you'd be inside it) and shows a glove on the grip instead.
+        s.char.group.visible = this.behind || s.i !== i;
         if (s.fp) {
-          s.fp.group.visible = true;
-          s.fp.arm.visible = s.i === i;
+          s.fp.group.visible = this.behind ? !!s.oneToOne : true;
+          s.fp.arm.visible = !this.behind && s.i === i;
         }
       }
     };

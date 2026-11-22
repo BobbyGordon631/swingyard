@@ -822,3 +822,181 @@ body {
   letter-spacing: 0.18em;
   margin: 2px 0 4px;
 }
+
+/* ---------- game feel (js/feel.js): celebration words, confetti, flash ---------- */
+#fx {
+  pointer-events: none !important;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.pop-word {
+  position: absolute;
+  left: 50%;
+  top: 34%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  white-space: nowrap;
+  animation: pop-word-out var(--life, 1.9s) ease-in forwards;
+}
+.pop-word .word {
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.02em;
+  color: #fff;
+  /* Chunky outlined lettering: a thick dark rim and a coloured drop under it. */
+  -webkit-text-stroke: 0.09em var(--ink);
+  paint-order: stroke fill;
+  text-shadow: 0 0.09em 0 var(--c), 0 0.16em 0 var(--ink), 0 0.3em 0.4em rgba(31, 42, 68, 0.3);
+}
+.pop-word.huge .word {
+  font-size: clamp(64px, 13vw, 190px);
+}
+.pop-word.big .word {
+  font-size: clamp(52px, 10vw, 140px);
+}
+.pop-word.mid .word {
+  font-size: clamp(36px, 6vw, 84px);
+}
+.pop-word .word span {
+  display: inline-block;
+  animation: pop-letter 0.5s cubic-bezier(0.2, 1.8, 0.4, 1) both;
+  animation-delay: calc(var(--i) * 0.045s);
+}
+.pop-word .sub {
+  margin-top: 0.3em;
+  display: inline-block;
+  padding: 6px 20px;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font-size: clamp(16px, 2.2vw, 28px);
+  font-weight: 800;
+  box-shadow: var(--shadow);
+  animation: pop-letter 0.4s cubic-bezier(0.2, 1.6, 0.4, 1) 0.3s both;
+}
+@keyframes pop-letter {
+  0% {
+    transform: translateY(0.6em) scale(0.2) rotate(-12deg);
+    opacity: 0;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes pop-word-out {
+  0%,
+  78% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -62%) scale(1.08);
+  }
+}
+.confetti {
+  position: absolute;
+  inset: 0;
+}
+.confetti i {
+  position: absolute;
+  top: -20px;
+  border-radius: 2px;
+  animation-name: confetti-fall;
+  animation-timing-function: cubic-bezier(0.25, 0.4, 0.6, 1);
+  animation-fill-mode: both;
+  will-change: transform;
+}
+@keyframes confetti-fall {
+  0% {
+    transform: translate(0, 0) rotate(0);
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), 108vh) rotate(var(--rot));
+    opacity: 0;
+  }
+}
+.flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  animation: flash-out 0.38s ease-out forwards;
+}
+@keyframes flash-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* ---------- Skill Level ---------- */
+.card .skill-chip {
+  min-height: 1.2em;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--accent);
+}
+.card .skill-chip .pro,
+.skill-pro {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: var(--sun);
+  color: var(--ink);
+  font-weight: 900;
+}
+#results-skill {
+  margin-top: 18px;
+  padding: 14px 16px 8px;
+  border-radius: 16px;
+  background: var(--soft);
+  animation: pop 0.3s cubic-bezier(0.2, 1.5, 0.4, 1) 0.3s both;
+}
+.skill-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 12px;
+}
+.skill-label {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--dim);
+}
+.skill-num {
+  font-size: 34px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+.skill-num.bump {
+  animation: pop 0.35s cubic-bezier(0.2, 1.8, 0.4, 1);
+}
+.skill-delta {
+  font-size: 17px;
+  font-weight: 800;
+}
+.skill-delta.up {
+  color: #1f9e93;
+}
+.skill-delta.down {
+  color: var(--coral);
+}
+.skill-graph {
+  display: block;
+  margin: 6px auto 0;
+  max-width: 100%;
+}
+.skill-newpro {
+  margin-top: 4px;
+  font-weight: 900;
+  color: #c99a1e;
+}

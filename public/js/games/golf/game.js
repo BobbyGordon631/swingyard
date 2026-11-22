@@ -2,7 +2,7 @@
 // wrist twist hooks or slices, wind pushes the ball, and on the green you putt.
 import * as THREE from 'three';
 import { CONFIG } from '../../config.js';
-import { createCharacter, addProp } from '../../characters.js';
+import { createCharacter, addProp, react } from '../../characters.js';
 import { BaseGame, outdoorScene, blobShadow, patch, flatMat, addTree, followSun, lerp, clamp, rand, ease } from '../common.js';
 import { CLUBS, PUTTER, HOLES, lieAt, distanceToPin, angleToPin, suggestClub, simulateShot, simulatePutt, scoreName } from './course.js';
 
@@ -28,7 +28,11 @@ export class GolfGame extends BaseGame {
     // Predicted flight (dashed) and the path the ball actually took (solid).
     this.arc = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 1.6, gapSize: 1.1, transparent: true, opacity: 0.9, depthWrite: false }));
     this.arc.frustumCulled = false;
-    this.trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9 }));
+    // The flight trail: one fixed buffer, filled in place as the ball flies (no per-frame geometry).
+    const trailGeo = new THREE.BufferGeometry();
+    trailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(4096 * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    trailGeo.setDrawRange(0, 0);
+    this.trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9 }));
     this.trail.frustumCulled = false;
     scene.add(this.arc, this.trail);
     // A big bobbing arrow over the hole, drawn on top of everything so you can always find it.
@@ -219,7 +223,14 @@ export class GolfGame extends BaseGame {
     this.meter(swing.power);
     this.sfx.whoosh(swing.power);
     if (putting) this.sfx.bounce();
-    else this.sfx.pop(swing.power);
+    else {
+      this.sfx.pop(swing.power);
+      // A flushed drive: a beat of hit-stop at impact.
+      if (swing.power > 0.75) {
+        this.feel.hitstop(40);
+        this.feel.shake(0.15);
+      }
+    }
     this.vibrate(p.i, 50);
     const curve = swing.twist === 0 ? 'straight' : `${swing.twist > 0 ? 'slice →' : '← hook'} ${Math.round(Math.abs(swing.twist) * 100)}%`;
     this.last(`Power ${Math.round(swing.power * 100)}% · ${curve}${putting ? '' : ` · carry ${Math.round(res.carry)} m`}`);
@@ -263,15 +274,35 @@ export class GolfGame extends BaseGame {
       this.state = 'done';
       this.after(2.4, () => this._nextPlayer());
     };
+    const c = this.chars[this.cur];
     if (res.holed) {
       this.sfx[p.strokes <= par ? 'strike' : 'good']();
       this.vibrate(p.i, [80, 60, 160]);
-      return holeOut(scoreName(p.strokes, par), p.strokes < par ? 'big' : '');
+      const name = scoreName(p.strokes, par);
+      if (p.strokes <= par) {
+        // Under par gets the big call, confetti and a roar from the gallery; par gets warm applause.
+        const under = par - p.strokes;
+        this.feel.celebrate(`${name.toUpperCase()}${name.endsWith('!') ? '' : '!'}`, { color: under ? '#ffd166' : '#2ec4b6', size: under ? 'huge' : 'big', confetti: under ? 60 + under * 40 : 0 });
+        this.sfx.sparkle(under + 1);
+        if (under) this.sfx.crowdCheer(0.7 + under * 0.15);
+        else this.sfx.applause(0.6);
+        react(c, under ? 'cheer' : 'pump', 2);
+        p.scores.push(p.strokes);
+        this._hud();
+        this.state = 'done';
+        this.after(2.4, () => this._nextPlayer());
+        return;
+      }
+      this.sfx.applause(0.3);
+      if (p.strokes > par + 1) react(c, 'sad');
+      return holeOut(name, '');
     }
     if (res.penalty) {
       p.strokes++;
       p.pos = from;
       this.sfx[res.lie === 'water' ? 'splash' : 'miss']();
+      this.sfx.crowdGroan(0.4);
+      react(c, 'sad');
       this.banner(`${LIE_NAME[res.lie]} — one stroke penalty`, 1.8, 'small');
     } else {
       p.pos = res.end;
@@ -281,8 +312,14 @@ export class GolfGame extends BaseGame {
         this.sfx.good();
         return holeOut(`Tap-in · ${scoreName(p.strokes, par)}`, '');
       }
-      if (res.lie === 'sand') this.banner('Bunker', 1.2, 'small');
-      else if (res.lie === 'green' && !putting) this.banner('On the green', 1.2, 'small');
+      if (res.lie === 'sand') {
+        this.banner('Bunker', 1.2, 'small');
+        this.sfx.crowdOoh(0.3);
+      } else if (res.lie === 'green' && !putting) {
+        this.banner('On the green', 1.2, 'small');
+        this.sfx.applause(d < 3 ? 0.6 : 0.3); // stuck it close: a bigger hand
+        if (d < 3) react(c, 'pump');
+      }
     }
     if (p.strokes >= par + this.cfg.maxOverPar) {
       p.strokes = par + this.cfg.maxOverPar;
@@ -301,7 +338,8 @@ export class GolfGame extends BaseGame {
         return { name: this.name(p.i), css: this.css(p.i), total, score: `${total} (${rel === 0 ? 'E' : rel > 0 ? `+${rel}` : rel})` };
       })
       .sort((a, b) => a.total - b.total);
-    this.finish(rows, { unit: 'strokes', title: rows.length > 1 ? (rows[0].total === rows[1].total ? "It's a tie!" : `${rows[0].name} wins!`) : 'Golf — final score' });
+    const skill = rows.length === 1 ? { kind: 'score', value: rows[0].total - pars } : null; // strokes over par
+    this.finish(rows, { unit: 'strokes', title: rows.length > 1 ? (rows[0].total === rows[1].total ? "It's a tie!" : `${rows[0].name} wins!`) : 'Golf — final score', skill });
   }
 
   // --------------------------------------------------------- update
@@ -339,7 +377,11 @@ export class GolfGame extends BaseGame {
       this.ballPos.set(lerp(a.x, b.x, u), lerp(a.y, b.y, u) + 0.11, lerp(a.z, b.z, u));
       if (!s.putting && i0 !== s.drawn) {
         s.drawn = i0;
-        this._setLine(this.trail, pts.slice(0, i0 + 1).map((q) => new THREE.Vector3(q.x, q.y + 0.11, q.z)));
+        const attr = this.trail.geometry.attributes.position;
+        const n = Math.min(i0 + 1, attr.count);
+        for (let k = 0; k < n; k++) attr.setXYZ(k, pts[k].x, pts[k].y + 0.11, pts[k].z);
+        attr.needsUpdate = true;
+        this.trail.geometry.setDrawRange(0, n);
       }
       if (f >= pts.length - 1) this._landed();
     }

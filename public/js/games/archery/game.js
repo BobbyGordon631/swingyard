@@ -2,7 +2,7 @@
 // Three ends of three arrows at 20, 35 and 50 metres.
 import * as THREE from 'three';
 import { CONFIG } from '../../config.js';
-import { createCharacter, addProp } from '../../characters.js';
+import { createCharacter, addProp, react } from '../../characters.js';
 import { BaseGame, outdoorScene, blobShadow, flatMat, addTree, lerp, clamp, rand, ease } from '../common.js';
 
 const TARGET_R = 0.61;
@@ -164,13 +164,28 @@ export class ArcheryGame extends BaseGame {
     const r = Math.hypot(hit.x, hit.y);
     const pts = ringScore(r);
     p.ends[this.end].push(pts);
-    if (pts > 0) this.sfx.thunk();
-    else this.sfx.miss();
+    const c = this.chars[this.cur];
+    if (pts > 0) {
+      this.sfx.thunk();
+      this.feel.hitstop(30 + pts * 4); // the thunk lands with weight
+      this.feel.shake(0.05 + pts * 0.012);
+    } else this.sfx.miss();
     if (pts === 10) {
       this.sfx.strike();
+      this.sfx.sparkle(2);
+      this.sfx.crowdCheer(0.75);
       this.vibrate(p.i, [80, 60, 160]);
+      this.feel.celebrate('BULLSEYE!', { color: '#ffd166', size: 'big', confetti: 50, sub: '10 points' });
+      react(c, 'cheer');
+    } else {
+      this.banner(pts ? `${pts}` : 'Miss', 1.5, pts >= 9 ? 'big' : '');
+      if (pts >= 8) this.sfx.applause(0.25 + (pts - 8) * 0.15);
+      else if (pts === 0) {
+        this.sfx.crowdGroan(0.35);
+        react(c, 'sad');
+      }
+      if (pts === 9) react(c, 'pump');
     }
-    this.banner(pts === 10 ? 'Bullseye! 10' : pts ? `${pts}` : 'Miss', 1.5, pts >= 9 ? 'big' : '');
     this.last(`Draw ${Math.round(draw * 100)}% · landed ${Math.round(r * 100)} cm from the centre`);
     this.state = 'score';
     this._hud();
@@ -181,7 +196,8 @@ export class ArcheryGame extends BaseGame {
     const rows = this.players
       .map((p) => ({ name: this.name(p.i), css: this.css(p.i), score: p.ends.flat().reduce((a, b) => a + b, 0) }))
       .sort((a, b) => b.score - a.score);
-    this.finish(rows, { unit: 'pts' });
+    const max = this.cfg.distances.length * this.cfg.arrowsPerEnd * 10;
+    this.finish(rows, { unit: 'pts', skill: rows.length === 1 ? { kind: 'score', value: rows[0].score, max } : null });
   }
 
   update(dt) {

@@ -16,6 +16,16 @@ Swordplay are split screen; Baseball is always split (batter's view and pitcher'
 knows where the phone points and which way it moves in any direction, not just left/right tilt. The racket in
 Tennis and the sword in Swordplay follow the phone 1:1; swings are classified by the real direction of travel.
 
+**Big moments feel big.** Clean hits freeze for a few frames (hit-stop) and shake the camera. Knockdowns, ring-outs,
+home runs and pins scattering from a full rack play in slow motion. Strikes build up to Double and Turkey calls with
+confetti, and bowling cuts to the bowler celebrating. The crowd murmurs, cheers, groans and claps along. The Yardlings
+breathe, blink, jump for joy and slump when things go wrong.
+
+**Skill Level.** Every solo game (alone, or one person vs the CPU) moves a Skill Level for that sport. It climbs fast in
+your first games and settles as it learns your level. Beat a stronger CPU, or win by more, and it rises faster. The
+results screen shows the change and a graph, and 1000 makes you a **Pro**. In Tennis, Baseball and Boxing more fans turn
+up to watch as your level grows. Levels are saved in the browser, and each sport card shows yours.
+
 ## Play online
 
 Open **https://kksolve.com/swingyard/** on a computer or TV browser. The menu shows a QR code and a
@@ -121,7 +131,8 @@ Rules in brief:
 - **Tennis** — real scoring (15/30/40, deuce, advantage, tiebreak), sets first to 3 games by default
   (`tennis.gamesPerSet`). Serves must land in the diagonal service box: two faults lose the point. Ball flight
   has drag, Magnus force from spin, and a spin-dependent bounce. Your player runs to the ball automatically.
-  `tennis.assist` (0–1) decides how much near misses are pulled back into the court.
+  `tennis.assist` (0–1) decides how much near misses are pulled back into the court. The camera sits high behind
+  your baseline and you watch your Yardling swing the racket. Set `tennis.view: 'first'` for first person.
 - **Baseball** — 3 innings, no walks (balls are called but don't count), three strikes, fouls count as strikes
   up to two, and a 10-run mercy rule. Pitches are slower than real so they can be read, and the batter's timing
   window is wide. Fielding is automatic but simulated: the ball flies with drag, every fielder races it, throws
@@ -164,6 +175,7 @@ Common adjustments:
 | Pointer is jittery / sluggish | lower / raise `orientation.minCutoff`; raise `orientation.beta` if fast moves lag |
 | Racket / sword feel a beat behind your hand | raise `orientation.predictMs` (draws them where the phone will be); lower it if fast swings overshoot |
 | Pointing needs too big / small a movement | `orientation.yawRange` / `orientation.pitchRange` (degrees to the edge) |
+| Tennis: the court looks too small / you can't see your player | `tennis.behindHeight`, `behindBack`, `behindFov`; or `tennis.view: 'first'` |
 | Rotation-heavy swings (bat, racket, sword) register late | lower `swing.gyroDpsPerG` |
 | Tennis: can't reach the ball with the racket | raise `tennis.hitRadius`; too many shots out: raise `tennis.assist` |
 | Tennis: the toss doesn't trigger | lower `tennis.tossThresholdG` |
@@ -219,8 +231,10 @@ public/js/games/boxing/       game.js
 public/js/games/archery/      game.js
 public/js/games/sword/        game.js
 public/js/main.js             menu, lobby, pause, results, render loop
-public/js/audio.js            Web Audio sound effects
-public/js/characters.js       the low-poly "Yardling" characters
+public/js/audio.js            Web Audio sound effects, including the crowd (murmur, cheers, groans, applause)
+public/js/characters.js       the low-poly "Yardling" characters, their idle life and reactions
+public/js/feel.js             hit-stop, slow motion, camera shake, celebration words and confetti
+public/js/skill.js            Skill Level per sport (saved in the browser), with the results-screen graph
 public/js/debugOverlay.js     the D-key sensor graph
 test/                         node:test suites
 ```

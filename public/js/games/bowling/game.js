@@ -10,8 +10,18 @@ import * as THREE from 'three';
 import { CONFIG } from '../../config.js';
 import { powerFromPeak, normalizeTwist } from '../../motion/swingDetector.js';
 import { clamp } from '../../motion/filter.js';
-import { createCharacter, PLAYER_COLORS, PLAYER_CSS } from '../../characters.js';
-import { envMap } from '../common.js';
+import { createCharacter, react, PLAYER_COLORS, PLAYER_CSS } from '../../characters.js';
+import { envMap, feel } from '../common.js';
+
+// Strike streak calls: the more in a row, the bigger the word.
+const STREAK = ['STRIKE!', 'DOUBLE!', 'TURKEY!'];
+const streakName = (n) => STREAK[n - 1] || `${n}-BAGGER!`;
+const TRAIL_MAX = 1024; // ball path points (one every 40 ms of roll)
+// Camera behind the bowler: far enough back and high enough to see the whole body and the swing,
+// like a broadcast shot from behind the approach.
+const CAM_BACK = 5.6;
+const CAM_UP = 2.85;
+const REACT_CUT_S = 0.85; // after a strike / spare, cut to the bowler this long after the pins settle
 import { BowlingPhysics, DIM, pinHomes, PIT_Z, SWEEP_FRONT, pinRadiusAt } from './physics.js';
 import { boardAt, BOARDS } from './oil.js';
 import { Scorecard, isSplit } from './scoring.js';
@@ -56,6 +66,7 @@ export class BowlingGame {
       css: PLAYER_CSS[i],
       card: new Scorecard(),
       splits: new Set(), // frames whose first ball left a split
+      streak: 0, // strikes in a row
     }));
     this.physics = new BowlingPhysics(this.cfg, { seed: (Math.random() * 1e9) | 0 });
     this.cur = 0;
@@ -93,7 +104,7 @@ export class BowlingGame {
     scene.environment = envMap();
     scene.environmentIntensity = 0.6;
     this.camera = new THREE.PerspectiveCamera(40, 16 / 9, 0.1, 80);
-    this.camera.position.set(0.3, 2.25, STANCE_Z + 3.3);
+    this.camera.position.set(0.3, CAM_UP, STANCE_Z + CAM_BACK);
     this._look = new THREE.Vector3(0, 0.4, -L * 0.6);
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0xb8c6dd, 1.5));
@@ -348,11 +359,12 @@ export class BowlingGame {
     tip.rotation.z = Math.PI / 2;
     this.guide.add(tip);
     scene.add(this.guide);
-    // The ball's path, drawn as it rolls: watch it skid, hook and roll.
-    this.trail = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
-      new THREE.LineBasicMaterial({ color: 0xff6b4a, transparent: true, opacity: 0.55 }),
-    );
+    // The ball's path, drawn as it rolls: watch it skid, hook and roll. One fixed buffer, filled in place
+    // (rebuilding the geometry every frame allocated and re-uploaded it while the ball rolled).
+    const trailGeo = new THREE.BufferGeometry();
+    trailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL_MAX * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    trailGeo.setDrawRange(0, 0);
+    this.trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0xff6b4a, transparent: true, opacity: 0.55 }));
     this.trail.frustumCulled = false;
     scene.add(this.trail);
 
@@ -752,6 +764,9 @@ export class BowlingGame {
     }
     this.armAtRelease = this.arm;
     this.entry = null;
+    this._trailN = 0;
+    this.reactShot = null;
+    this.reacted = false;
     this.lastGutter = false;
     const rel = this.physics.release;
     this.lastThrow = { power, spin, speed, peak };
@@ -783,21 +798,43 @@ export class BowlingGame {
     const holder = this.holder;
     const split = firstBall && down < 10 && isSplit(standing);
     if (split) p.splits.add(before.frame);
+    this.reactShot = null;
+    this.reacted = false;
+    this.resultHold = 1.4;
     if (down === 10 && firstBall) {
-      this._banner('STRIKE!', 2.2, 'big');
+      p.streak++;
+      const n = p.streak;
+      feel.celebrate(streakName(n), { color: n >= 3 ? '#ffd166' : '#ff6b4a', size: n >= 2 ? 'huge' : 'big', confetti: n >= 3 ? 120 : n === 2 ? 50 : 0 });
       this.sfx.strike();
+      this.sfx.sparkle(n - 1);
+      this.sfx.crowdCheer(Math.min(1, 0.75 + n * 0.1));
       holder?.vibrate([80, 60, 80, 60, 220]);
+      // Cut to the bowler celebrating, the way a TV broadcast would.
+      this.reactShot = 'cheer';
+      this.resultHold = 2.7;
     } else if (down === before.pinsUp) {
-      this._banner('SPARE!', 2.2, 'big');
+      p.streak = 0;
+      feel.celebrate('SPARE!', { color: '#2ec4b6', size: 'big' });
       this.sfx.spare();
+      this.sfx.sparkle(0);
+      this.sfx.crowdCheer(0.6);
       holder?.vibrate([80, 60, 160]);
+      this.reactShot = 'pump';
+      this.resultHold = 2.4;
     } else if (down === 0) {
+      p.streak = 0;
       this._banner(gutter ? 'Gutter ball' : 'Miss', 1.8);
       this.sfx.miss();
+      this.sfx.crowdGroan(gutter ? 0.7 : 0.5);
+      react(this.chars[this.cur], 'sad');
     } else if (split) {
+      p.streak = 0;
       this._banner(`${standing.join('-')} split`, 2);
+      this.sfx.crowdOoh(0.6);
     } else {
+      p.streak = 0;
       this._banner(`${down} pin${down === 1 ? '' : 's'}`, 1.8);
+      if (down >= 8 && firstBall) this.sfx.crowdOoh(0.4);
     }
     if (standing.length && down < before.pinsUp) this.el.last.textContent = `${this.el.last.textContent} · left ${standing.join('-')}`;
     this._renderBoard();
@@ -832,7 +869,8 @@ export class BowlingGame {
     const rows = this.players
       .map((p) => ({ player: p.index, name: p.name, css: p.css, score: p.card.total }))
       .sort((a, b) => b.score - a.score);
-    this.onFinish({ sport: 'Bowling', unit: 'pts', rows });
+    const skill = this.players.length === 1 ? { kind: 'score', value: this.players[0].card.total } : null;
+    this.onFinish({ sport: 'Bowling', unit: 'pts', rows, skill });
   }
 
   // ------------------------------------------------------------ pinsetter
@@ -911,6 +949,12 @@ export class BowlingGame {
           if (e.type === 'ballpin' && !this.firstImpact) {
             this.firstImpact = true;
             this.holder?.vibrate(90);
+            // The crunch: a few frames of hit-stop, a jolt, and, on a full rack, slow motion so you
+            // can watch the pins scatter.
+            const hard = clamp(e.v / 8, 0.3, 1);
+            feel.hitstop(45 + 35 * hard);
+            feel.shake(0.25 + 0.3 * hard);
+            if (this.pinsBefore === 10) feel.slowmo(0.85, 0.4);
           }
         }
       }
@@ -926,7 +970,11 @@ export class BowlingGame {
       if (ph.state === 'done') this._ballDone();
     } else if (this.state === 'result') {
       ph.events.length = 0;
-      if (this.stateT > 1.4) this._advance();
+      if (this.reactShot && !this.reacted && this.stateT > REACT_CUT_S) {
+        this.reacted = true;
+        react(this.chars[this.cur], this.reactShot);
+      }
+      if (this.stateT > (this.resultHold || 1.4)) this._advance();
     } else if (this.state === 'sweep') {
       ph.events.length = 0;
       this._updateSweep();
@@ -1055,15 +1103,37 @@ export class BowlingGame {
     const track = ph.track;
     this.trail.visible = (this.state === 'rolling' || this.state === 'result') && track.length > 1;
     if (this.trail.visible && track.length !== this._trailN) {
+      const attr = this.trail.geometry.attributes.position;
+      const n = Math.min(track.length, TRAIL_MAX);
+      // A new roll starts the track over; otherwise only the new points are written.
+      const from = this._trailN && this._trailN < track.length ? this._trailN : 0;
+      for (let i = from; i < n; i++) attr.setXYZ(i, track[i][0], 0.006, track[i][1]);
+      attr.needsUpdate = true;
+      this.trail.geometry.setDrawRange(0, n);
       this._trailN = track.length;
-      this.trail.geometry.dispose();
-      this.trail.geometry = new THREE.BufferGeometry().setFromPoints(track.map(([x, z]) => new THREE.Vector3(x, 0.006, z)));
     }
 
     // Camera: behind the bowler on the approach, then down the lane with the ball, then on the deck.
     const cam = this.camera;
     let tx, ty, tz, lx, ly, lz;
-    if (this.state === 'rolling' || this.state === 'result' || this.state === 'sweep') {
+    const reactionShot = !!(this.reactShot && c && this.state === 'result' && this.stateT > REACT_CUT_S);
+    if (reactionShot) {
+      // Out in front of the bowler, looking back up the lane at them while they celebrate. A hard cut
+      // in, then a slow push.
+      const g = c.group.position;
+      const push = this.stateT - REACT_CUT_S;
+      tx = g.x + HAND_X * 0.5 - 0.35;
+      ty = 1.05;
+      tz = g.z - 2.9 + Math.min(push, 2) * 0.25;
+      lx = g.x + HAND_X * 0.5;
+      ly = 0.95;
+      lz = g.z;
+      if (!this._inReactShot) {
+        this._inReactShot = true;
+        cam.position.set(tx, ty, tz);
+        this._look.set(lx, ly, lz);
+      }
+    } else if (this.state === 'rolling' || this.state === 'result' || this.state === 'sweep') {
       const bz = ph.ballInPlay ? ph.ball.position.z : -L;
       tz = Math.max(bz + 3.4, -(L - 3.6));
       tx = (ph.ballInPlay ? ph.ball.position.x : 0) * 0.3;
@@ -1075,22 +1145,28 @@ export class BowlingGame {
       if (this.throwT < 0.5) {
         // Hold on the release for a moment before chasing the ball.
         const k = smooth(this.throwT / 0.5);
-        tz = lerp((this._charZ ?? SLIDE_Z) + 3.3, tz, k);
-        ty = lerp(2.25, ty, k);
+        tz = lerp((this._charZ ?? SLIDE_Z) + CAM_BACK, tz, k);
+        ty = lerp(CAM_UP, ty, k);
       }
     } else {
       // Straight behind and above the bowler, looking square down the lane (no sideways yaw), so
       // the lane runs up the middle of the screen and the whole swing is visible. It walks up the
       // approach with the bowler.
       const cz = this._charZ ?? STANCE_Z;
-      tx = this.aimX + 0.3; // over the bowling (right) shoulder, so the head doesn't block the lane
-      ty = 2.25;
-      tz = cz + 3.3;
+      tx = this.aimX + 0.55; // over the bowling (right) shoulder, so the bowler doesn't block the lane
+      ty = CAM_UP;
+      tz = cz + CAM_BACK;
       lx = tx;
-      ly = 0.15;
+      ly = 0.35;
       lz = cz - 11;
     }
-    const k = ease(dt, this.state === 'rolling' ? 5 : 3);
+    if (!reactionShot && this._inReactShot) {
+      // Cut straight back behind the bowler for the next ball.
+      this._inReactShot = false;
+      cam.position.set(tx, ty, tz);
+      this._look.set(lx, ly, lz);
+    }
+    const k = ease(dt, reactionShot ? 4 : this.state === 'rolling' ? 5 : 3);
     cam.position.set(lerp(cam.position.x, tx, k), lerp(cam.position.y, ty, k), lerp(cam.position.z, tz, k));
     this._look.set(lerp(this._look.x, lx, k), lerp(this._look.y, ly, k), lerp(this._look.z, lz, k));
     cam.lookAt(this._look);

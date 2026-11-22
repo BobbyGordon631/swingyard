@@ -5,7 +5,9 @@ import { CONFIG } from './config.js';
 import { InputManager } from './input/inputManager.js';
 import { Sfx } from './audio.js';
 import { DebugOverlay } from './debugOverlay.js';
-import { createCharacter, PLAYER_COLORS, PLAYER_CSS } from './characters.js';
+import { createCharacter, animateYardlings, react, PLAYER_COLORS, PLAYER_CSS } from './characters.js';
+import { feel } from './feel.js';
+import { getSkill, recordSkill, performanceFor, skillGraphSvg, PRO_LEVEL } from './skill.js';
 import { BowlingGame } from './games/bowling/game.js';
 import { TennisGame } from './games/tennis/game.js';
 import { BaseballGame } from './games/baseball/game.js';
@@ -16,14 +18,15 @@ import { SwordGame } from './games/sword/game.js';
 import { setRenderer, envMap, skyDome } from './games/common.js';
 
 // players: [min, max]. cpu: a computer opponent joins when one person plays.
+// crowd: how loud the background murmur is (0 = none).
 const SPORTS = [
-  { id: 'bowling', title: 'Bowling', icon: '🎳', players: [1, 4], create: (o) => new BowlingGame(o) },
-  { id: 'tennis', title: 'Tennis', icon: '🎾', players: [1, 2], cpu: true, create: (o) => new TennisGame(o) },
-  { id: 'baseball', title: 'Baseball', icon: '⚾', players: [1, 2], cpu: true, create: (o) => new BaseballGame(o) },
-  { id: 'golf', title: 'Golf', icon: '⛳', players: [1, 4], create: (o) => new GolfGame(o) },
-  { id: 'boxing', title: 'Boxing', icon: '🥊', players: [1, 2], cpu: true, create: (o) => new BoxingGame(o) },
-  { id: 'archery', title: 'Archery', icon: '🏹', players: [1, 4], create: (o) => new ArcheryGame(o) },
-  { id: 'sword', title: 'Swordplay', icon: '⚔️', players: [1, 2], cpu: true, create: (o) => new SwordGame(o) },
+  { id: 'bowling', title: 'Bowling', icon: '🎳', players: [1, 4], crowd: 0.35, create: (o) => new BowlingGame(o) },
+  { id: 'tennis', title: 'Tennis', icon: '🎾', players: [1, 2], cpu: true, crowd: 0.45, create: (o) => new TennisGame(o) },
+  { id: 'baseball', title: 'Baseball', icon: '⚾', players: [1, 2], cpu: true, crowd: 0.6, create: (o) => new BaseballGame(o) },
+  { id: 'golf', title: 'Golf', icon: '⛳', players: [1, 4], crowd: 0.08, create: (o) => new GolfGame(o) },
+  { id: 'boxing', title: 'Boxing', icon: '🥊', players: [1, 2], cpu: true, crowd: 0.7, create: (o) => new BoxingGame(o) },
+  { id: 'archery', title: 'Archery', icon: '🏹', players: [1, 4], crowd: 0.12, create: (o) => new ArcheryGame(o) },
+  { id: 'sword', title: 'Swordplay', icon: '⚔️', players: [1, 2], cpu: true, crowd: 0.4, create: (o) => new SwordGame(o) },
 ];
 const LEVELS = ['Easy', 'Normal', 'Hard'];
 
@@ -42,6 +45,8 @@ setRenderer(renderer);
 const input = new InputManager(CONFIG);
 const sfx = new Sfx();
 const debug = new DebugOverlay($('#debug'), input);
+feel.mount($('#fx'));
+const soundHint = $('#soundhint');
 
 const app = {
   screen: 'menu', // menu | game | paused | results
@@ -161,7 +166,7 @@ const sportCards = SPORTS.map((s, i) => {
   const el = document.createElement('button');
   el.className = 'card';
   const [min, max] = s.players;
-  el.innerHTML = `<div class="icon">${s.icon}</div><div class="title">${s.title}</div><div class="sub">${min === max ? min : `${min}–${max}`} players</div>`;
+  el.innerHTML = `<div class="icon">${s.icon}</div><div class="title">${s.title}</div><div class="sub">${min === max ? min : `${min}–${max}`} players</div><div class="skill-chip"></div>`;
   el.addEventListener('click', () => {
     app.step = 'sport';
     app.sport = i;
@@ -181,6 +186,15 @@ function stepOptions() {
   }
   if (app.step === 'level') return LEVELS.map((l, i) => [l, i]);
   return [];
+}
+
+/** Each card shows your Skill Level in that sport (once you have played it solo). */
+function renderSkillChips() {
+  SPORTS.forEach((s, i) => {
+    const sk = getSkill(s.id);
+    const chip = sportCards[i].querySelector('.skill-chip');
+    chip.innerHTML = sk.games ? `${sk.pro ? '<b class="pro">PRO</b> ' : ''}Skill ${sk.level}` : '';
+  });
 }
 
 function renderMenu() {
@@ -263,6 +277,10 @@ function showMenu() {
   app.screen = 'menu';
   app.step = 'sport';
   app.shownAt = performance.now();
+  app.cams = [];
+  feel.reset();
+  sfx.crowdBed(0);
+  renderSkillChips();
   nav.clear();
   $('#menu').classList.remove('hidden');
   $('#lobby').classList.remove('hidden');
@@ -281,14 +299,22 @@ function startGame() {
   $('#pause').classList.add('hidden');
   $('#phones').classList.remove('hidden');
   input.recenterAll(); // you just pressed A pointing at the TV: that is "straight ahead"
-  app.game = SPORTS[app.sport].create({
+  feel.reset();
+  const sport = SPORTS[app.sport];
+  // Solo: your Skill Level decides how many people turn up to watch. Multiplayer: a full house.
+  const skill = app.players === 1 ? getSkill(sport.id).level : PRO_LEVEL;
+  app.game = sport.create({
     input,
     sfx,
     hud: $('#hud'),
     playerCount: app.players,
     difficulty: app.level,
+    skill,
     onFinish: showResults,
   });
+  app.cams = [...new Set([app.game.camera, ...(app.game.cams || []), app.game.camBat, app.game.camPitch, app.game.camPlay].filter(Boolean))];
+  app.gameTime = 0;
+  sfx.crowdBed(sport.crowd * (0.5 + 0.5 * Math.min(1, skill / PRO_LEVEL)));
   // Compile every shader now, so nothing stutters the first time a ball, banner or effect appears.
   app.game.warm = () => warmUp(app.game); // games call this after building new things (a new golf hole)
   warmUp(app.game);
@@ -387,7 +413,53 @@ function showResults(res) {
     .join('');
   for (const p of input.phones) p.setStatus('Game over');
   input.vibrateAll([60, 50, 60]);
+  showSkill(res);
   openChoices('#results', ['Play again', 'Main menu'], [startGame, showMenu]);
+  // A win gets a little party.
+  const humanWon = !tie && res.rows.length > 1 && !/^CPU/.test(top.name);
+  if (humanWon || res.rows.length === 1) feel.confetti(humanWon ? 90 : 40);
+  sfx.crowdCheer(humanWon ? 0.9 : 0.5);
+}
+
+/** Rate a solo game and show the Skill Level change, counting up from the old value. */
+let skillAnim = 0;
+function showSkill(res) {
+  const box = $('#results-skill');
+  cancelAnimationFrame(skillAnim);
+  const sport = SPORTS[app.sport];
+  if (!res.skill || app.players !== 1) {
+    box.classList.add('hidden');
+    return;
+  }
+  const result = res.skill.kind === 'score' ? { kind: 'score', perf: performanceFor(sport.id, res.skill.value, res.skill) } : res.skill;
+  const r = recordSkill(sport.id, result);
+  const up = r.delta >= 0;
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="skill-head">
+      <span class="skill-label">${sport.title} Skill Level</span>
+      <span class="skill-num">${r.before}</span>
+      <span class="skill-delta ${up ? 'up' : 'down'}">${up ? '▲ +' : '▼ '}${r.delta}</span>
+      ${r.pro ? '<span class="skill-pro">PRO</span>' : ''}
+    </div>
+    ${skillGraphSvg(r.history, { color: up ? '#2ec4b6' : '#ff6b4a' })}
+    ${r.newPro ? '<div class="skill-newpro">You reached Pro!</div>' : ''}`;
+  const num = box.querySelector('.skill-num');
+  const t0 = performance.now() + 450;
+  const step = () => {
+    const k = Math.min(1, Math.max(0, (performance.now() - t0) / 1100));
+    num.textContent = Math.round(r.before + (r.after - r.before) * (1 - Math.pow(1 - k, 3)));
+    if (k < 1) skillAnim = requestAnimationFrame(step);
+    else {
+      num.classList.add('bump');
+      sfx.levelUp(up);
+      if (r.newPro) {
+        feel.celebrate('PRO!', { color: '#ffd166', size: 'huge', confetti: 140, sub: `${sport.title} Skill Level ${r.after}` });
+        sfx.fanfare();
+      }
+    }
+  };
+  skillAnim = requestAnimationFrame(step);
 }
 
 // ------------------------------------------------------------------ input
@@ -441,6 +513,7 @@ input.on('join', (phone) => {
   sfx.join();
   toast(`Player ${phone.slot + 1}'s phone connected`);
   phone.vibrate(60);
+  if (app.screen === 'menu') react(menuScene.chars[phone.slot], 'wave'); // say hello
   if (app.screen === 'menu') phone.setStatus('Menu: arrows + A');
   renderBadges();
 });
@@ -559,7 +632,15 @@ function frame() {
   input.update(now);
 
   if (app.screen !== 'game') for (const dir of nav.repeats(now)) navigate(dir);
-  if (app.game && app.screen !== 'paused') app.game.update(dt);
+  if (app.game && app.screen !== 'paused') {
+    // Hit-stop freezes the game for a few frames; slow motion stretches a big moment.
+    const gdt = feel.step(dt);
+    if (gdt > 0) {
+      app.game.update(gdt);
+      app.gameTime += gdt;
+      animateYardlings(app.game.scene, gdt, app.gameTime);
+    }
+  }
 
   let scene, camera;
   if (app.game) {
@@ -579,12 +660,16 @@ function frame() {
     menuScene.chars.forEach((c, i) => {
       c.group.visible = app.step === 'sport' ? i < maxPlayers : i < app.players;
       c.group.position.y = Math.abs(Math.sin(t * 2.2 + i * 1.3)) * (input.phones[i].connected ? 0.16 : 0.04);
-      c.armR.rotation.x = input.phones[i].connected ? 2.6 + Math.sin(t * 7 + i) * 0.35 : 0.1;
-      c.armL.rotation.x = Math.sin(t * 1.5 + i) * 0.15;
+      if (!c.anim.react) {
+        c.armR.rotation.x = input.phones[i].connected ? 2.6 + Math.sin(t * 7 + i) * 0.35 : 0.1;
+        c.armL.rotation.x = Math.sin(t * 1.5 + i) * 0.15;
+      }
     });
+    animateYardlings(menuScene.scene, dt, t);
   }
   const W = window.innerWidth;
   const H = window.innerHeight;
+  if (app.game) feel.apply(app.cams);
   if (app.game && app.game.render) {
     // Games that draw more than one view (split screen) render themselves.
     app.game.render(renderer, W, H);
@@ -598,8 +683,13 @@ function frame() {
     }
     renderer.render(scene, camera);
   }
+  if (app.game) feel.restore();
   debug.draw(now);
-  $('#soundhint').classList.toggle('hidden', sfx.ready);
+  const ready = sfx.ready;
+  if (ready !== app.soundReady) {
+    app.soundReady = ready;
+    soundHint.classList.toggle('hidden', ready);
+  }
 }
 
 input.attach(window, canvas);

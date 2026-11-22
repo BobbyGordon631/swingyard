@@ -1,6 +1,10 @@
 // Shared plumbing for the sports: HUD skeleton, player/controller mapping, outdoor scenery.
 import * as THREE from 'three';
-import { PLAYER_COLORS, PLAYER_CSS } from '../characters.js';
+import { PLAYER_COLORS, PLAYER_CSS, react } from '../characters.js';
+import { feel } from '../feel.js';
+import { PRO_LEVEL } from '../skill.js';
+
+export { feel, react };
 
 export const lerp = (a, b, t) => a + (b - a) * t;
 export const clamp = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x);
@@ -260,7 +264,12 @@ const CROWD_HEADS = [0xffe0bd, 0xf1c27d, 0xc68642, 0x8d5524, 0xffcd94];
  * few hundred people cost almost nothing.
  * @returns {{update(time:number, excitement?:number):void}} call update() to make the crowd bob
  */
-export function addGrandstand(scene, { x = 0, z = 0, rotY = 0, width = 16, rows = 5, base = 0, color = 0xe6edf7 }) {
+/** How full the stands are for a skill level: a handful of fans at first, a packed house for a Pro. */
+export function crowdFill(level = PRO_LEVEL) {
+  return clamp(0.2 + (0.8 * level) / PRO_LEVEL, 0.2, 1);
+}
+
+export function addGrandstand(scene, { x = 0, z = 0, rotY = 0, width = 16, rows = 5, base = 0, color = 0xe6edf7, fill = 1 }) {
   const stand = new THREE.Group();
   stand.position.set(x, base, z);
   stand.rotation.y = rotY;
@@ -274,7 +283,9 @@ export function addGrandstand(scene, { x = 0, z = 0, rotY = 0, width = 16, rows 
     stand.add(step);
     const n = Math.floor(width / 0.62);
     for (let i = 0; i < n; i++) {
-      if (Math.sin(i * 12.9898 + k * 78.233 + x) * 43758.5453 % 1 > 0.82) continue; // a few empty seats
+      const hv = Math.sin(i * 12.9898 + k * 78.233 + x) * 43758.5453;
+      // Empty seats: a few when full; most when the crowd hasn't heard of you yet (front rows fill first).
+      if (hv - Math.floor(hv) > 0.86 * fill * (1.15 - (0.3 * k) / rows)) continue;
       seats.push(new THREE.Vector3((i - (n - 1) / 2) * 0.62 + (k % 2) * 0.2, h + 0.33, -k * 0.9));
     }
   }
@@ -347,6 +358,8 @@ export class BaseGame {
     this.onFinish = opts.onFinish;
     this.playerCount = opts.playerCount;
     this.difficulty = opts.difficulty ?? 1;
+    this.skill = opts.skill ?? PRO_LEVEL; // the solo player's Skill Level in this sport (sizes the crowd)
+    this.feel = feel;
     this.title = title;
     this.time = 0;
     this.over = false;
@@ -472,11 +485,33 @@ export class BaseGame {
       if (this._after[i].t <= this.time) this._after.splice(i, 1)[0].fn();
     }
   }
-  finish(rows, { unit = 'pts', title } = {}) {
+  /**
+   * skill: how the solo player did, for their Skill Level (see skill.js):
+   *   { kind: 'versus', outcome: 1 | 0.5 | 0, margin: 0..1 }  or  { kind: 'score', perf }
+   */
+  finish(rows, { unit = 'pts', title, skill } = {}) {
     if (this.over) return;
     this.over = true;
     this.sfx.fanfare();
-    this.onFinish({ sport: this.title, unit, rows, title });
+    this.onFinish({ sport: this.title, unit, rows, title, skill: skill && { difficulty: this.difficulty, ...skill } });
+  }
+
+  /** Head-to-head result for player 0 against player 1 (the CPU in solo games), for the Skill Level. */
+  versus(winner, margin = 0.5) {
+    return { kind: 'versus', outcome: winner === null || winner < 0 ? 0.5 : winner === 0 ? 1 : 0, margin };
+  }
+
+  /** The crowd and the characters react to a moment. kind: 'great' | 'good' | 'bad'; who = winner's character. */
+  moment(kind, { winner = null, loser = null, intensity = 0.7 } = {}) {
+    if (kind === 'great' || kind === 'good') {
+      this.sfx.crowdCheer(kind === 'great' ? Math.max(0.8, intensity) : intensity * 0.7);
+      if (winner) react(winner, kind === 'great' ? 'cheer' : 'pump');
+      if (loser) react(loser, 'sad');
+    } else {
+      this.sfx.crowdGroan(intensity);
+      if (loser) react(loser, 'sad');
+      if (winner) react(winner, 'pump');
+    }
   }
   onButton() {}
   onSwing() {}

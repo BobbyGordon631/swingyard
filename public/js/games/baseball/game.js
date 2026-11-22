@@ -9,8 +9,8 @@
 // Three innings, no walks, a mercy rule, and automatic fielding that really races the ball.
 import * as THREE from 'three';
 import { CONFIG } from '../../config.js';
-import { createCharacter, addProp } from '../../characters.js';
-import { BaseGame, outdoorScene, blobShadow, patch, flatMat, addGrandstand, addBanner, renderViews, makeTrail, followSun, lerp, clamp, rand, ease } from '../common.js';
+import { createCharacter, addProp, react as charReact } from '../../characters.js';
+import { BaseGame, outdoorScene, blobShadow, patch, flatMat, addGrandstand, addBanner, renderViews, makeTrail, followSun, crowdFill, lerp, clamp, rand, ease } from '../common.js';
 import { advance, walk, battedBall, fieldPlay, BASES, MOUND, FENCE, POSITIONS } from './rules.js';
 
 const PITCHES = {
@@ -99,11 +99,13 @@ export class BaseballGame extends BaseGame {
     scene.add(backstop);
 
     // ---- The crowd: bleachers in the outfield, stands down both lines and behind home plate ----
+    // (fuller as your Skill Level grows)
+    const fill = crowdFill(this.skill);
     this.crowd = [];
     for (let i = 0; i < 10; i++) {
       const a = -Math.PI / 4 + ((i + 0.5) / 10) * (Math.PI / 2);
       const R = FENCE + 6;
-      this.crowd.push(addGrandstand(scene, { x: Math.sin(a) * R, z: -Math.cos(a) * R, rotY: -a, width: 17, rows: 9, color: 0xdfe8f3 }));
+      this.crowd.push(addGrandstand(scene, { x: Math.sin(a) * R, z: -Math.cos(a) * R, rotY: -a, width: 17, rows: 9, color: 0xdfe8f3, fill }));
     }
     for (const side of [-1, 1]) {
       for (const d of [22, 46, 70]) {
@@ -111,11 +113,11 @@ export class BaseballGame extends BaseGame {
         const uz = -Math.SQRT1_2;
         const nx = side * Math.SQRT1_2;
         const nz = Math.SQRT1_2;
-        this.crowd.push(addGrandstand(scene, { x: ux * d + nx * 13, z: uz * d + nz * 13, rotY: side > 0 ? -2.356 : 2.356, width: 23, rows: 8, color: 0xe6edf7 }));
+        this.crowd.push(addGrandstand(scene, { x: ux * d + nx * 13, z: uz * d + nz * 13, rotY: side > 0 ? -2.356 : 2.356, width: 23, rows: 8, color: 0xe6edf7, fill }));
       }
     }
-    this.crowd.push(addGrandstand(scene, { x: 0, z: 15, rotY: Math.PI, width: 30, rows: 10, color: 0xe6edf7 }));
-    for (const side of [-1, 1]) this.crowd.push(addGrandstand(scene, { x: side * 19, z: 9, rotY: Math.PI + side * 0.7, width: 14, rows: 9 }));
+    this.crowd.push(addGrandstand(scene, { x: 0, z: 15, rotY: Math.PI, width: 30, rows: 10, color: 0xe6edf7, fill }));
+    for (const side of [-1, 1]) this.crowd.push(addGrandstand(scene, { x: side * 19, z: 9, rotY: Math.PI + side * 0.7, width: 14, rows: 9, fill }));
     addBanner(scene, 'SWINGYARD  PARK', { x: 0, y: 9, z: -FENCE - 18, width: 26, height: 4, bg: '#1f5fae' });
 
     // Strike zone outline (batter's view)
@@ -338,6 +340,14 @@ export class BaseballGame extends BaseGame {
     const res = fieldPlay({ hit, react, fielderSpeed: this.cfg.fielderSpeed, runnerSpeed: this.cfg.runnerSpeed, throwSpeed: this.cfg.throwSpeed, bases: this.bases, outs: this.outs });
     this.sfx.crack();
     this.vibrate(this.batting, 70);
+    // Square contact crunches; a home run leaves the bat in slow motion.
+    const solid = clamp((hit.speed - 20) / 25, 0, 1);
+    this.feel.hitstop(30 + 60 * solid);
+    this.feel.shake(0.1 + 0.35 * solid);
+    if (res.kind === 'homer') {
+      this.feel.slowmo(1.1, 0.35);
+      this.sfx.crowdOoh(0.8);
+    } else if (solid > 0.6) this.sfx.crowdOoh(0.5);
     this.hype = 1;
     this.last(`${Math.round(hit.speed * 3.6)} km/h off the bat · ${Math.round(hit.launch)}° launch`);
     this._startPlay(res);
@@ -497,8 +507,18 @@ export class BaseballGame extends BaseGame {
     const adv = advance(this.bases, res.bases);
     this.bases = adv.bases;
     this._runs(adv.runs);
-    if (res.kind === 'homer') this.sfx.strike();
-    else this.sfx.good();
+    if (res.kind === 'homer') {
+      this.sfx.strike();
+      this.sfx.crowdCheer(1);
+      this.sfx.sparkle(2);
+      this.feel.celebrate('HOME RUN!', { color: this.css(this.batting), size: 'huge', confetti: this.isHuman(this.batting) ? 110 : 0 });
+      charReact(this.batter, 'cheer', 2);
+      charReact(this.pitcher, 'sad', 2);
+    } else {
+      this.sfx.good();
+      this.sfx.crowdCheer(adv.runs ? 0.7 : 0.45);
+      charReact(this.batter, 'pump');
+    }
     this.hype = 1.6;
     const text = adv.runs ? `${res.text} ${adv.runs} run${adv.runs > 1 ? 's' : ''} score${adv.runs > 1 ? '' : 's'}` : res.text;
     this._call(text, () => (walkOff() || this._mercy() ? this._end() : this._newBatter()), res.kind === 'homer' ? 'big' : '');
@@ -534,6 +554,11 @@ export class BaseballGame extends BaseGame {
     this.strikes++;
     if (this.strikes >= 3) {
       this.sfx.denied();
+      this.feel.celebrate('STRIKE OUT!', { color: this.css(this.pitching), size: 'mid', seconds: 1.5 });
+      if (this.isHuman(this.pitching)) this.sfx.crowdCheer(0.6);
+      else this.sfx.crowdGroan(0.6);
+      charReact(this.batter, 'sad');
+      charReact(this.pitcher, 'pump');
       this.outs++;
       if (this.outs >= 3) return this._call('Strike three — three outs', () => this._nextHalf());
       return this._call('Strike three — out!', () => this._newBatter());
@@ -571,7 +596,7 @@ export class BaseballGame extends BaseGame {
     const mercy = this._mercy() ? ' (mercy rule)' : '';
     this.finish(
       order.map((t) => ({ name: this.name(t), css: this.css(t), score: this.score[t] })),
-      { unit: 'runs', title: tie ? "It's a tie!" : `${this.name(order[0])} wins${mercy}!` },
+      { unit: 'runs', title: tie ? "It's a tie!" : `${this.name(order[0])} wins${mercy}!`, skill: this.versus(tie ? null : order[0], clamp(Math.abs(this.score[0] - this.score[1]) / 6, 0, 1)) },
     );
   }
 
@@ -654,14 +679,14 @@ export class BaseballGame extends BaseGame {
       if (res.fielder >= 0) {
         // Third person behind the fielder making the play, looking at the ball.
         const f = this.fielders[res.fielder].group.position;
-        const away = new THREE.Vector3(f.x - this.ball.x, 0, f.z - this.ball.z);
+        const away = (this._camAway ||= new THREE.Vector3()).set(f.x - this.ball.x, 0, f.z - this.ball.z);
         if (away.lengthSq() < 4) away.set(f.x, 0, f.z);
         away.normalize();
-        want = new THREE.Vector3(f.x + away.x * 7, 3.6, f.z + away.z * 7);
-        look = new THREE.Vector3(lerp(f.x, this.ball.x, 0.5), Math.max(1, this.ball.y * 0.6), lerp(f.z, this.ball.z, 0.5));
+        want = (this._camWant ||= new THREE.Vector3()).set(f.x + away.x * 7, 3.6, f.z + away.z * 7);
+        look = (this._camLook ||= new THREE.Vector3()).set(lerp(f.x, this.ball.x, 0.5), Math.max(1, this.ball.y * 0.6), lerp(f.z, this.ball.z, 0.5));
       } else {
-        want = new THREE.Vector3(this.ball.x * 0.4, 14 + this.ball.y * 0.4, 22 + this.ball.z * 0.15);
-        look = this.ball.clone();
+        want = (this._camWant ||= new THREE.Vector3()).set(this.ball.x * 0.4, 14 + this.ball.y * 0.4, 22 + this.ball.z * 0.15);
+        look = this.ball;
       }
       const k = ease(dt, 3);
       if (this.play.t < dt * 1.5) cam.position.copy(want);

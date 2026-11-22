@@ -10,8 +10,8 @@
 // Three rounds, then the judges decide.
 import * as THREE from 'three';
 import { CONFIG } from '../../config.js';
-import { createCharacter, addProp } from '../../characters.js';
-import { BaseGame, softShadows, addGrandstand, addBanner, renderViews, ghost, envMap, lerp, clamp, rand } from '../common.js';
+import { createCharacter, addProp, react } from '../../characters.js';
+import { BaseGame, softShadows, addGrandstand, addBanner, renderViews, ghost, envMap, crowdFill, lerp, clamp, rand } from '../common.js';
 
 const D2R = Math.PI / 180;
 const TYPES = ['jab', 'straight', 'hook', 'uppercut'];
@@ -103,11 +103,12 @@ export class BoxingGame extends BaseGame {
       lamp.position.set(x, 7, 0);
       scene.add(lamp);
     }
+    const fill = crowdFill(this.skill); // the arena fills up as your Skill Level grows
     this.crowd = [
-      addGrandstand(scene, { x: 0, z: -6.6, rotY: 0, width: 22, rows: 9, base: -0.9, color: 0x3a4766 }),
-      addGrandstand(scene, { x: 0, z: 6.6, rotY: Math.PI, width: 22, rows: 9, base: -0.9, color: 0x3a4766 }),
-      addGrandstand(scene, { x: -6.6, z: 0, rotY: Math.PI / 2, width: 18, rows: 9, base: -0.9, color: 0x3a4766 }),
-      addGrandstand(scene, { x: 6.6, z: 0, rotY: -Math.PI / 2, width: 18, rows: 9, base: -0.9, color: 0x3a4766 }),
+      addGrandstand(scene, { x: 0, z: -6.6, rotY: 0, width: 22, rows: 9, base: -0.9, color: 0x3a4766, fill }),
+      addGrandstand(scene, { x: 0, z: 6.6, rotY: Math.PI, width: 22, rows: 9, base: -0.9, color: 0x3a4766, fill }),
+      addGrandstand(scene, { x: -6.6, z: 0, rotY: Math.PI / 2, width: 18, rows: 9, base: -0.9, color: 0x3a4766, fill }),
+      addGrandstand(scene, { x: 6.6, z: 0, rotY: -Math.PI / 2, width: 18, rows: 9, base: -0.9, color: 0x3a4766, fill }),
     ];
     this.hype = 0.4;
     addBanner(scene, 'SWINGYARD  BOXING', { x: 0, y: 6, z: -14, width: 12, height: 1.6, bg: '#ff6b4a' });
@@ -270,6 +271,12 @@ export class BoxingGame extends BaseGame {
       def.stun = a.type === 'uppercut' ? 0.5 : 0.3;
       def.flash = 0.2;
       def.snap = 0.25;
+      // The crunch of a clean punch: freeze a few frames, jolt the camera, the crowd reacts.
+      const heavy = clamp(a.power + (a.type === 'uppercut' || a.type === 'hook' ? 0.25 : 0), 0, 1);
+      this.feel.hitstop(35 + 55 * heavy);
+      this.feel.shake(0.12 + 0.4 * heavy);
+      react(def.char, 'hit');
+      if (heavy > 0.65) this.sfx.crowdOoh(heavy * 0.7);
       this.sfx.punch(a.power);
       this.hype = 1.6;
       this.vibrate(def.i, a.type === 'uppercut' ? [60, 30, 90] : 80);
@@ -300,7 +307,13 @@ export class BoxingGame extends BaseGame {
     this.countT = 0;
     this.hype = 2;
     this.sfx.cheer();
-    this.banner('DOWN!', 1.4, 'big');
+    this.sfx.crowdCheer(1);
+    // Knockdowns happen in slow motion with a white flash, like a broadcast replay.
+    this.feel.slowmo(1.3, 0.25);
+    this.feel.flash(0.5);
+    this.feel.shake(0.7);
+    this.feel.celebrate('DOWN!', { color: '#ff6b4a', size: 'huge', seconds: 1.6 });
+    react(att.char, 'cheer');
     this._hud();
     if (def.kdRound >= 3) {
       this.after(1.6, () => this._end(att.i, 'TKO'));
@@ -331,10 +344,23 @@ export class BoxingGame extends BaseGame {
     this.sfx.bell();
     const loser = 1 - winner;
     const title = how === 'draw' ? 'Draw!' : `${this.name(winner)} wins by ${how === 'KO' ? 'knockout' : how === 'TKO' ? 'TKO' : 'decision'}!`;
-    this.banner(how === 'draw' ? 'DRAW' : how === 'decision' ? 'Decision' : how, 2.2, 'big');
+    if (how === 'KO' || how === 'TKO') {
+      this.feel.celebrate(how === 'KO' ? 'K.O.!' : 'T.K.O.!', { color: this.css(winner), size: 'huge', confetti: this.isHuman(winner) ? 100 : 0, sub: `${this.name(winner)} wins` });
+      this.sfx.crowdCheer(1);
+    } else {
+      this.banner(how === 'draw' ? 'DRAW' : 'Decision', 2.2, 'big');
+      this.sfx.applause(0.8);
+    }
+    if (how !== 'draw') {
+      react(this.f[winner].char, 'cheer', 2.4);
+      if (!this.f[loser].down) react(this.f[loser].char, 'sad', 2.4);
+    }
+    // Skill margin: a stoppage is a clear win; on points, how lopsided the damage was.
+    const d = this.f.map((f) => f.dealt);
+    const margin = how === 'KO' || how === 'TKO' ? 1 : clamp((2 * Math.abs(d[0] - d[1])) / Math.max(1, d[0] + d[1]), 0, 1);
     this.after(2.4, () => {
       const order = how === 'draw' ? [0, 1] : [winner, loser];
-      this.finish(order.map((i) => ({ name: this.name(i), css: this.css(i), score: Math.round(this.f[i].dealt) })), { unit: 'damage dealt', title });
+      this.finish(order.map((i) => ({ name: this.name(i), css: this.css(i), score: Math.round(this.f[i].dealt) })), { unit: 'damage dealt', title, skill: this.versus(how === 'draw' ? null : winner, margin) });
     });
   }
 

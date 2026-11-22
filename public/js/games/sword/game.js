@@ -6,10 +6,17 @@
 // back; push them off the edge to win the round.
 import * as THREE from 'three';
 import { CONFIG } from '../../config.js';
-import { createCharacter } from '../../characters.js';
+import { createCharacter, react } from '../../characters.js';
 import { BaseGame, outdoorScene, flatMat, renderViews, ghost, lerp, clamp, rand } from '../common.js';
 
 const GAP = 0.95; // each fighter stands this far from the midpoint between them
+const UP = new THREE.Vector3(0, 1, 0);
+const DOWN = new THREE.Vector3(0, -1, 0);
+const _sh = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
+const _reach = new THREE.Vector3();
+const _local = new THREE.Vector3();
+const _q = new THREE.Quaternion();
 const D2R = Math.PI / 180;
 const ANGLES = [0, 45, 90, 135, 180, 225, 270, 315].map((a) => a * D2R);
 
@@ -189,6 +196,9 @@ export class SwordGame extends BaseGame {
     if (def.guard && Math.abs(90 - across) <= this.cfg.blockToleranceDeg) {
       this.sfx.clang();
       this._say('Blocked!');
+      this.feel.hitstop(70); // blades meet: a hard stop
+      this.feel.shake(0.25);
+      this.sfx.crowdOoh(0.4);
       att.stun = this.cfg.blockStunS; // knocked off balance: an opening
       att.act = null;
       this.vibrate(att.i, [40, 30, 40]);
@@ -201,6 +211,9 @@ export class SwordGame extends BaseGame {
     this.shift += att.sign * push;
     def.stun = Math.max(def.stun, 0.35);
     def.hitT = 0.25;
+    this.feel.hitstop(35 + 50 * a.power);
+    this.feel.shake(0.15 + 0.3 * a.power);
+    react(def.char, 'hit');
     this.sfx.punch(a.power);
     if (!def.guard) this._say(push > this.cfg.push * 1.8 ? 'Big hit!' : 'Hit!');
     this.vibrate(def.i, 100);
@@ -217,11 +230,18 @@ export class SwordGame extends BaseGame {
     this.f[loser].fall = 0.001;
     this.wins[winner]++;
     this.after(0.5, () => this.sfx.splash());
-    this.banner(`${this.name(winner)} takes the round`, 2);
+    // Over the edge in slow motion.
+    this.feel.slowmo(1.2, 0.3);
+    this.feel.shake(0.5);
+    const matchWon = this.wins[winner] >= this.cfg.roundsToWin;
+    this.feel.celebrate('RING OUT!', { color: this.css(winner), size: 'big', sub: `${this.name(winner)} takes the round`, confetti: matchWon && this.isHuman(winner) ? 100 : 0 });
+    this.sfx.crowdCheer(matchWon ? 1 : 0.8);
+    react(this.f[winner].char, 'cheer', 2.2);
     this._hud();
     this.after(2.6, () => {
       if (this.wins[winner] >= this.cfg.roundsToWin) {
-        this.finish([winner, loser].map((i) => ({ name: this.name(i), css: this.css(i), score: this.wins[i] })), { unit: 'rounds', title: `${this.name(winner)} wins!` });
+        const margin = clamp((this.wins[winner] - this.wins[loser]) / this.cfg.roundsToWin, 0, 1);
+        this.finish([winner, loser].map((i) => ({ name: this.name(i), css: this.css(i), score: this.wins[i] })), { unit: 'rounds', title: `${this.name(winner)} wins!`, skill: this.versus(winner, margin) });
       } else this._startRound();
     });
   }
@@ -276,14 +296,14 @@ export class SwordGame extends BaseGame {
       const dir = this._bladeDir(f);
       f.dir.lerp(dir, human && this.src(f.i)?.hasOrientation ? 1 : 1 - Math.exp(-dt * 30)).normalize();
       g.updateMatrixWorld();
-      const shoulder = new THREE.Vector3(0.31, 0.95, 0).applyMatrix4(g.matrixWorld);
-      const fwd = new THREE.Vector3(0, 0, -f.sign);
-      const reachDir = f.dir.clone().multiplyScalar(0.55).addScaledVector(fwd, 0.45).normalize();
-      const hand = shoulder.clone().addScaledVector(reachDir, 0.42);
-      f.sword.position.copy(hand);
-      f.sword.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), f.dir);
-      const local = reachDir.clone().applyQuaternion(g.quaternion.clone().invert());
-      ch.armR.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), local);
+      // (Scratch vectors: this runs for both fighters every frame.)
+      const shoulder = _sh.set(0.31, 0.95, 0).applyMatrix4(g.matrixWorld);
+      const fwd = _fwd.set(0, 0, -f.sign);
+      const reachDir = _reach.copy(f.dir).multiplyScalar(0.55).addScaledVector(fwd, 0.45).normalize();
+      f.sword.position.copy(shoulder).addScaledVector(reachDir, 0.42);
+      f.sword.quaternion.setFromUnitVectors(UP, f.dir);
+      const local = _local.copy(reachDir).applyQuaternion(_q.copy(g.quaternion).invert());
+      ch.armR.quaternion.setFromUnitVectors(DOWN, local);
       ch.armL.rotation.set(0.4, 0, -0.15);
     }
 

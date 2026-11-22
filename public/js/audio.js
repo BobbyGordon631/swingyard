@@ -27,7 +27,8 @@ export class Sfx {
         const data = this._noise.getChannelData(0);
         for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
       }
-      if (this.ctx.state === 'suspended') this.ctx.resume();
+      if (this.ctx.state === 'suspended') this.ctx.resume().then(() => this.resumeBed());
+      else this.resumeBed();
     } catch {
       this.ctx = null;
     }
@@ -211,5 +212,145 @@ export class Sfx {
       this.tone({ freq: f, type: 'triangle', dur: i === notes.length - 1 ? 0.6 : 0.16, gain: 0.2, delay: i * 0.13 });
       this.tone({ freq: f / 2, type: 'sine', dur: 0.16, gain: 0.12, delay: i * 0.13 });
     });
+  }
+
+  // ---- crowd ----
+  // A crowd is many voices: noise shaped by vowel formants, with a swell envelope, plus whoops and claps.
+
+  /** Formant-filtered noise "voice mass" with an attack / hold / release envelope. */
+  _crowd({ dur = 1.6, gain = 0.2, formants = [700, 1150, 2500], attack = 0.12, delay = 0, bend = 1 }) {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime + delay;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this._noise;
+    src.loop = true;
+    const out = this.ctx.createGain();
+    out.gain.setValueAtTime(0.0001, t);
+    out.gain.exponentialRampToValueAtTime(gain, t + attack);
+    out.gain.setValueAtTime(gain, t + dur * 0.45);
+    out.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    formants.forEach((f, i) => {
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.Q.value = 3 + i * 1.5;
+      bp.frequency.setValueAtTime(f, t);
+      if (bend !== 1) bp.frequency.exponentialRampToValueAtTime(f * bend, t + dur);
+      const g = this.ctx.createGain();
+      g.gain.value = [1, 0.6, 0.3][i] || 0.2;
+      src.connect(bp).connect(g).connect(out);
+    });
+    out.connect(this.master);
+    src.start(t, Math.random() * 0.8);
+    src.stop(t + dur + 0.05);
+  }
+
+  _claps(n, spread, gain = 0.08, delay = 0) {
+    for (let i = 0; i < n; i++) {
+      this.noise({ dur: 0.035 + Math.random() * 0.02, gain: gain * (0.5 + Math.random() * 0.5), type: 'bandpass', freq: 1400 + Math.random() * 1600, q: 1.2, delay: delay + Math.random() * spread });
+    }
+  }
+
+  _whoops(n, spread, delay = 0) {
+    for (let i = 0; i < n; i++) {
+      const f = 700 + Math.random() * 500;
+      this.tone({ freq: f, to: f * (1.3 + Math.random() * 0.4), type: 'sine', dur: 0.35 + Math.random() * 0.25, gain: 0.025, delay: delay + Math.random() * spread });
+    }
+  }
+
+  /** The crowd goes up. intensity 0..1 (a nice shot .. a strike / home run / knockout). */
+  crowdCheer(intensity = 0.6) {
+    const k = Math.max(0.2, Math.min(1, intensity));
+    this._crowd({ dur: 1.4 + k * 1.4, gain: 0.08 + k * 0.14, formants: [650, 1100, 2450], attack: 0.08, bend: 1.12 });
+    this._crowd({ dur: 1.2 + k * 1.2, gain: 0.05 + k * 0.08, formants: [850, 1400, 2900], attack: 0.15, delay: 0.05, bend: 1.08 });
+    this._claps(Math.round(10 + k * 40), 1 + k * 1.6, 0.06 + k * 0.05, 0.15);
+    this._whoops(Math.round(k * 6), 1.2, 0.1);
+  }
+
+  /** "Awww": the crowd feels it with you. */
+  crowdGroan(intensity = 0.6) {
+    const k = Math.max(0.2, Math.min(1, intensity));
+    this._crowd({ dur: 1.3 + k * 0.6, gain: 0.08 + k * 0.1, formants: [600, 950, 2300], attack: 0.18, bend: 0.62 });
+    this._crowd({ dur: 1.1 + k * 0.5, gain: 0.05 + k * 0.06, formants: [450, 800, 2100], attack: 0.22, delay: 0.06, bend: 0.7 });
+  }
+
+  /** Polite applause (a good shot, a set won). */
+  applause(intensity = 0.5) {
+    const k = Math.max(0.1, Math.min(1, intensity));
+    this._claps(Math.round(20 + k * 50), 1.4 + k, 0.05 + k * 0.04);
+  }
+
+  /** "Ooh!" - a near miss, a big swing, a close call. */
+  crowdOoh(intensity = 0.5) {
+    const k = Math.max(0.2, Math.min(1, intensity));
+    this._crowd({ dur: 0.9, gain: 0.07 + k * 0.08, formants: [380, 800, 2400], attack: 0.1, bend: 1.25 });
+  }
+
+  /** A steady murmur under the game (0 = off). Set it once per sport; it fades in and out smoothly. */
+  crowdBed(level = 0.3) {
+    if (!this.ready) {
+      this._bedWanted = level;
+      return;
+    }
+    const t = this.ctx.currentTime;
+    if (!this._bed && level > 0) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this._noise;
+      src.loop = true;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 520;
+      bp.Q.value = 0.8;
+      const bp2 = this.ctx.createBiquadFilter();
+      bp2.type = 'lowpass';
+      bp2.frequency.value = 1600;
+      const g = this.ctx.createGain();
+      g.gain.value = 0.0001;
+      // A slow wobble so it sounds like people, not a fan.
+      const lfo = this.ctx.createOscillator();
+      lfo.frequency.value = 0.23;
+      const lfoGain = this.ctx.createGain();
+      lfoGain.gain.value = 140;
+      lfo.connect(lfoGain).connect(bp.frequency);
+      src.connect(bp).connect(bp2).connect(g).connect(this.master);
+      src.start();
+      lfo.start();
+      this._bed = { src, g, lfo };
+    }
+    if (this._bed) {
+      this._bed.g.gain.cancelScheduledValues(t);
+      this._bed.g.gain.setTargetAtTime(Math.max(0.0001, level * 0.07), t, 0.6);
+      if (level <= 0) {
+        const bed = this._bed;
+        this._bed = null;
+        setTimeout(() => {
+          try {
+            bed.src.stop();
+            bed.lfo.stop();
+          } catch {}
+        }, 3000);
+      }
+    }
+  }
+
+  /** Called on unlock in case a sport asked for the murmur before audio was allowed. */
+  resumeBed() {
+    if (this._bedWanted != null && this.ready) {
+      const l = this._bedWanted;
+      this._bedWanted = null;
+      this.crowdBed(l);
+    }
+  }
+
+  /** A rising sparkle under a celebration word. step = 0, 1, 2... climbs for streaks. */
+  sparkle(step = 0) {
+    const base = 660 * Math.pow(2, Math.min(step, 5) / 6);
+    [0, 4, 7, 12].forEach((s, i) => this.tone({ freq: base * Math.pow(2, s / 12), type: 'triangle', dur: 0.14, gain: 0.1, delay: i * 0.055 }));
+    this.tone({ freq: base * 2, type: 'sine', dur: 0.5, gain: 0.06, delay: 0.22 });
+  }
+
+  /** A soft UI chime for skill level going up / down. */
+  levelUp(up = true) {
+    const seq = up ? [523, 659, 784, 1047] : [523, 466, 392];
+    seq.forEach((f, i) => this.tone({ freq: f, type: 'triangle', dur: 0.16, gain: 0.12, delay: i * 0.09 }));
   }
 }
