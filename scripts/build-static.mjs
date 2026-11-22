@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { versionImports, versionHtml } from './cacheBust.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = path.join(ROOT, 'dist');
@@ -32,6 +33,21 @@ for (const page of ['index.html', 'controller.html']) {
   const f = path.join(DIST, page);
   fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('</head>', '    <meta name="swingyard-mode" content="online" />\n  </head>'));
 }
+// Stamp this deploy's version on every local file the pages load (see cacheBust.mjs), so one reload
+// after a deploy picks up all of it instead of running on modules the browser still has cached.
+const VERSION = (process.env.GITHUB_SHA || Date.now().toString(36)).slice(0, 10);
+(function stamp(d) {
+  for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+    const p = path.join(d, f.name);
+    if (f.isDirectory()) stamp(p);
+    else if (/\.m?js$/.test(f.name)) fs.writeFileSync(p, versionImports(fs.readFileSync(p, 'utf8'), VERSION));
+  }
+})(path.join(DIST, 'js'));
+for (const page of ['index.html', 'controller.html']) {
+  const f = path.join(DIST, page);
+  fs.writeFileSync(f, versionHtml(fs.readFileSync(f, 'utf8'), VERSION));
+}
+console.log(`version ${VERSION} stamped on every module, script and stylesheet`);
 // Serve files as-is (no Jekyll processing on GitHub Pages).
 fs.writeFileSync(path.join(DIST, '.nojekyll'), '');
 
