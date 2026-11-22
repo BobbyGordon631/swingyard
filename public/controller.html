@@ -334,9 +334,10 @@
           peer.on('disconnected', () => this.readyState !== 1 && fail());
           this._timer = setTimeout(() => this.readyState === 0 && fail(), 15000);
         }
-        send(text) {
+        /** Motion samples go on the fast unreliable channel; everything else (button presses!) on the reliable one. */
+        send(text, reliable = false) {
           if (this.readyState !== 1) return;
-          if (this.m && this.m.open && text.startsWith('{"t":"m"')) this.m.send(text);
+          if (!reliable && this.m && this.m.open && text.startsWith('{"t":"m"')) this.m.send(text);
           else if (this.ctl.open) this.ctl.send(JSON.parse(text));
         }
         close() {
@@ -367,8 +368,17 @@
       const round = (v, k) => (v == null ? 0 : Math.round(v * k) / k);
       const vec = (o, k) => (o && o.x != null ? [round(o.x, k), round(o.y, k), round(o.z, k)] : null);
 
-      function send(obj) {
-        if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+      function send(obj, reliable = false) {
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj), reliable);
+      }
+      // Every button change bumps this. Packets carry it, so the game ignores button bits from a late
+      // (out-of-order) motion packet that was sent before the latest press or release. Random start:
+      // a reloaded page is a fresh sequence.
+      let btnSeq = Math.floor(Math.random() * 1e6);
+      /** Button edges: on the reliable channel, right away (a lost or reordered press was the "sometimes" bug). */
+      function sendButtons() {
+        btnSeq++;
+        send({ t: 'm', b: buttons, bs: btnSeq }, true);
       }
 
       // ---- motion ----
@@ -386,6 +396,7 @@
           r: r && r.alpha != null ? [round(r.alpha, 10), round(r.beta, 10), round(r.gamma, 10)] : null, // deg/s
           o: orient, // full 3D orientation, degrees
           b: buttons,
+          bs: btnSeq,
         });
       }
 
@@ -396,15 +407,66 @@
       }
 
       // ---- buttons ----
+      const tick = () => {
+        try {
+          navigator.vibrate?.(8); // a tiny click under the thumb (Android; iOS has no vibration API)
+        } catch {}
+      };
+      const setBit = (el, bit, down) => {
+        const next = down ? buttons | bit : buttons & ~bit;
+        if (next === buttons) return;
+        buttons = next;
+        el.classList.toggle('down', down);
+        if (down) tick();
+        sendButtons(); // button edges go out immediately
+      };
+
+      // The arrow pad is ONE touch zone, like a real d-pad: wherever the thumb lands (gaps and the
+      // middle included), the direction comes from where it is relative to the centre, and sliding
+      // the thumb round switches direction without lifting it.
+      const dpad = $('dpad');
+      const dirs = { up: dpad.querySelector('.up'), down: dpad.querySelector('.down'), left: dpad.querySelector('.left'), right: dpad.querySelector('.right') };
+      let dpadPointer = null;
+      let dpadDir = null;
+      const dpadSet = (dir) => {
+        if (dir === dpadDir) return;
+        if (dpadDir) setBit(dirs[dpadDir], Number(dirs[dpadDir].dataset.bit), false);
+        dpadDir = dir;
+        if (dir) setBit(dirs[dir], Number(dirs[dir].dataset.bit), true);
+      };
+      const dpadDirAt = (e) => {
+        const r = dpad.getBoundingClientRect();
+        const dx = e.clientX - (r.left + r.width / 2);
+        const dy = e.clientY - (r.top + r.height / 2);
+        // Small dead zone in the very middle only once a direction is held (so a tap in the middle of the
+        // pad still picks the nearest arrow, but resting the thumb there releases it).
+        if (dpadDir && Math.hypot(dx, dy) < 10) return null;
+        return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
+      };
+      dpad.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        if (dpadPointer !== null) return;
+        dpadPointer = e.pointerId;
+        try {
+          dpad.setPointerCapture(e.pointerId);
+        } catch {}
+        dpadSet(dpadDirAt(e));
+      });
+      dpad.addEventListener('pointermove', (e) => {
+        if (e.pointerId === dpadPointer) dpadSet(dpadDirAt(e));
+      });
+      for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+        dpad.addEventListener(type, (e) => {
+          if (e.pointerId !== dpadPointer) return;
+          dpadPointer = null;
+          dpadSet(null);
+        });
+      }
+
       for (const el of document.querySelectorAll('.btn')) {
+        if (el.closest('#dpad')) continue; // handled as one zone above
         const bit = Number(el.dataset.bit);
-        const set = (down) => {
-          const next = down ? buttons | bit : buttons & ~bit;
-          if (next === buttons) return;
-          buttons = next;
-          el.classList.toggle('down', down);
-          send({ t: 'm', b: buttons }); // button edges go out immediately
-        };
+        const set = (down) => setBit(el, bit, down);
         el.addEventListener('pointerdown', (e) => {
           e.preventDefault();
           try {
@@ -470,7 +532,7 @@
             screenOn = msg.screen;
             $('badge').textContent = `P${slot + 1}`;
             document.documentElement.style.setProperty('--pc', COLORS[slot]);
-            send({ t: 'm', b: buttons });
+            send({ t: 'm', b: buttons, bs: btnSeq }, true);
           } else if (msg.t === 'full') {
             slot = null;
             gameStatus = '';

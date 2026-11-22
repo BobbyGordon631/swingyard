@@ -139,7 +139,7 @@ export const CONFIG = {
     // Racket: the head is this far from the shoulder; contact is checked against the moving racket.
     armLength: 0.55,
     racketLength: 0.62,
-    hitRadius: 0.36, // m; real racket heads are ~0.15, this adds some forgiveness for no position tracking
+    hitRadius: 0.22, // m from the strings' centre (head ~0.14 + ball); the reach assist brings the racket to the ball
     racketCOR: 0.42, // apparent coefficient of restitution of a hand-held racket
     assist: 0.65, // 0 = pure physics, 1 = shots always land in court (direction still yours)
     tossThresholdG: 1.1, // flick the phone upward this hard to toss the ball
@@ -180,8 +180,8 @@ export const CONFIG = {
   golf: {
     aimRange: 22, // degrees the pointer can turn the shot either way
     aimSpeed: 0.7, // rad/s the arrow pad turns the aim
-    curveAccel: 2.0, // sideways m/s^2 at full twist (hook / slice)
-    windEffect: 0.12,
+    curveAccel: 1.0, // sideways m/s^2 at full twist (hook / slice); flights with drag and lift last ~6 s
+    windEffect: 0.07, // m/s^2 of push per m/s of wind
     puttMax: 24,
     maxOverPar: 4,
     flightSpeed: 1.25, // replay speed of the ball flight

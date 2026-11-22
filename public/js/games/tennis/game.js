@@ -16,6 +16,13 @@ import { COURT, BALL_R, stepAir, bounce, predictLanding, predictPath, solveShot,
 
 const { LEN, WID, NET } = COURT;
 const SUBSTEPS = 6;
+// A phone swing that only just missed the ball (racket within this many hit radii) still connects, off the frame.
+const FALLBACK = 1.35;
+// Reach assist: as the ball arrives, the 1:1 racket (and the body with it) slides up to this far toward it, so
+// the strings really meet the ball. Wii-style forgiveness without the ball teleporting to the racket.
+const ASSIST_MAX = 0.55;
+const ASSIST_GAIN = 0.85;
+const ASSIST_WINDOW = 0.4; // s either side of the planned contact
 // Players are drawn a little larger than life so they read from the camera behind the baseline, and the
 // racket's shoulder is the character's own shoulder, so the 1:1 racket sits in the Yardling's hand.
 const SC = 1.3;
@@ -31,6 +38,14 @@ const _bz = new THREE.Vector3();
 const _m4 = new THREE.Matrix4();
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
+const _sw = new THREE.Vector3();
+const _rd = new THREE.Vector3();
+const _c = new THREE.Vector3();
+const _tmp = new THREE.Vector3();
+const _tmp2 = new THREE.Vector3();
+const _q1 = new THREE.Quaternion();
+const smoothstep = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
 
 export class TennisGame extends BaseGame {
   constructor(o) {
@@ -103,7 +118,7 @@ export class TennisGame extends BaseGame {
       const prop = addProp(char, 'racket', 0xffffff);
       char.group.rotation.y = i === 0 ? 0 : Math.PI;
       scene.add(char.group);
-      const s = { i, sign, x: 0, z: sign * (LEN / 2 + 0.6), char, prop, swingT: 9, plan: null, pending: null, cooldown: 0, head: null, prevHead: null, closest: 9 };
+      const s = { i, sign, x: 0, z: sign * (LEN / 2 + 0.6), char, prop, swingT: 9, plan: null, pending: null, cooldown: 0, head: null, prevHead: null, closest: 9, assist: new THREE.Vector3(), stroke: null };
       if (this.isHuman(i)) s.fp = this._firstPersonRacket(i);
       return s;
     });
@@ -225,9 +240,16 @@ export class TennisGame extends BaseGame {
     this.sfx.whoosh(swing.power);
     const b = this.ball;
     const oneToOne = source.hasOrientation;
-    // Serve, timing fallback (keyboard, or a phone whose racket missed but the swing was close).
+    // Keyboard / no orientation: your swing starts the body's stroke (it lands on the ball at contact if
+    // the timing was right, or whiffs in the air if not).
+    if (!oneToOne && this.state !== 'toss') {
+      const tt = s.plan && b.live && b.hitter !== i ? s.plan.at - this.time : null;
+      const at = tt !== null && tt > -this.cfg.swingLateS && tt < this.cfg.swingEarlyS ? this.time + Math.max(0.05, tt) : this.time + 0.12;
+      s.stroke = s.stroke && tt !== null ? { ...s.stroke, at, commit: true } : { at, p: { x: s.x + s.sign * 0.9, y: 1.0, z: s.z - s.sign * 0.3 }, forehand: true, commit: true };
+    }
+    // Serve, timing fallback (keyboard, or a phone whose racket missed but only just).
     if (this.state === 'toss' && this.match.server === i && this.stateT > 0.3 && b.p.y > 1.7) {
-      if (oneToOne && s.closest > this.cfg.hitRadius * 1.8) return; // the racket was nowhere near it
+      if (oneToOne && s.closest > this.cfg.hitRadius * FALLBACK) return; // the racket was nowhere near it
       const q = clamp(1 - Math.abs(b.p.y - 2.55) / 1.1, 0.2, 1);
       const aimX = oneToOne ? clamp(swing.pose.yaw / 0.5, -1, 1) : swing.twist;
       this._serve(s, swing.power, aimX, q);
@@ -238,7 +260,7 @@ export class TennisGame extends BaseGame {
     const tt = s.plan.at - this.time; // seconds until the ball reaches the contact point
     const lead = tt + (performance.now() - swing.tPeak) / 1000;
     if (lead < -c.swingLateS || lead > c.swingEarlyS) return;
-    if (oneToOne && s.closest > this.cfg.hitRadius * 1.8 && tt < 0) return;
+    if (oneToOne && s.closest > this.cfg.hitRadius * FALLBACK && tt < 0) return;
     const timing = lead >= c.idealLeadS ? (lead - c.idealLeadS) / (c.swingEarlyS - c.idealLeadS) : (lead - c.idealLeadS) / (c.idealLeadS + c.swingLateS);
     s.pending = { at: this.time + Math.max(0, tt), timing: clamp(timing, -1, 1), power: swing.power, twist: swing.twist, mishit: oneToOne };
   }
@@ -342,6 +364,7 @@ export class TennisGame extends BaseGame {
     b.v = sol.v;
     b.w = sol.w;
     Object.assign(b, { live: true, hitter: s.i, bounces: 0, serve: true });
+    s.serveT = 0; // drives the serve animation
     this.state = 'rally';
     s.swingT = 0;
     this.sfx.pop(power);
@@ -356,7 +379,8 @@ export class TennisGame extends BaseGame {
     s.pending = null;
     const b = this.ball;
     if (!b.live || b.hitter === s.i || Math.hypot(b.p.x - s.x, b.p.z - s.z) > 2.6 || b.p.y > 3) return;
-    if (h.mishit && s.closest > this.cfg.hitRadius * 1.8) return; // the racket was nowhere near it
+    if (h.mishit && s.closest > this.cfg.hitRadius * FALLBACK) return; // the racket was nowhere near it
+    this._anchorStroke(s);
     const mis = h.mishit ? 0.75 : 1;
     const tx = -s.sign * h.timing * (WID / 2) * 1.1 + (h.mishit ? rand(-1.2, 1.2) : 0);
     const depth = 7 + h.power * 4;
@@ -373,12 +397,21 @@ export class TennisGame extends BaseGame {
     this.last(`${this.name(s.i)}: ${h.mishit ? 'off the frame · ' : ''}${dir} · ${Math.round(sol.speed * 3.6)} km/h`);
   }
 
+  /** At the moment of a real hit, pin the stroke to now and to where the ball actually is, so the racket is on it. */
+  _anchorStroke(s) {
+    if (!s.stroke) return;
+    s.stroke.at = this.time;
+    s.stroke.p = { ...this.ball.p };
+    s.stroke.commit = true;
+  }
+
   _aiHit(s) {
     const a = this.ai;
     const b = this.ball;
     const other = this.sides[1 - s.i];
     this.sfx.pop(0.5);
     s.swingT = 0;
+    this._anchorStroke(s);
     let tgt;
     let speed = a.shot + rand(-2, 3);
     if (Math.random() < a.error) {
@@ -429,6 +462,8 @@ export class TennisGame extends BaseGame {
     const forehand = Math.abs(fore - s.x) <= Math.abs(back - s.x) + 0.6;
     s.target = { x: forehand ? fore : back, z: pick.p.z + s.sign * F };
     s.plan = { at: this.time + pick.t, p: pick.p, forehand };
+    // The stroke the body animates toward: the CPU always swings at it; a human (keyboard) swing commits it.
+    s.stroke = { at: s.plan.at, p: { ...pick.p }, forehand, commit: !this.isHuman(i) };
   }
 
   // ------------------------------------------------------------ points
@@ -504,12 +539,68 @@ export class TennisGame extends BaseGame {
     const point = rot(p.basis.point);
     const right = rot(p.basis.right);
     const normal = rot(p.basis.normal);
-    const sh = { x: s.x + SH_X * f, y: SH_Y, z: s.z };
+    const A = s.assist; // the reach assist moves the whole arm (and body) toward the ball
+    const sh = { x: s.x + SH_X * f + A.x, y: SH_Y + A.y, z: s.z + A.z };
     const a = this.cfg.armLength * 0.85;
     const hand = { x: sh.x + point.x * a, y: sh.y + point.y * a - 0.08, z: sh.z + point.z * a };
     const r = this.cfg.racketLength * 0.75;
     const head = { x: hand.x + point.x * r, y: hand.y + point.y * r, z: hand.z + point.z * r };
     return { sh, hand, head, point, right, normal, real: p.real };
+  }
+
+  /**
+   * Reach assist for a 1:1 racket. Within ASSIST_WINDOW of the planned contact, slide the arm (and the body,
+   * which carries it) toward where the ball will be, by most of the distance between it and the strings as
+   * you are pointing them now. Your aim and swing still decide everything: point the racket roughly at the
+   * ball and swing, and the strings genuinely meet it. Outside the window the assist relaxes back to zero.
+   */
+  _updateAssist(s, dt) {
+    const A = s.assist;
+    const b = this.ball;
+    let tx = 0;
+    let ty = 0;
+    let tz = 0;
+    let rate = 6;
+    const myToss = this.state === 'toss' && this.match.server === s.i && b.p.y > 1.6;
+    const incoming = this.state === 'rally' && b.live && b.hitter !== s.i && s.plan;
+    if ((myToss || incoming) && s.frame && s.frame.real) {
+      let w;
+      let px;
+      let py;
+      let pz;
+      if (myToss) {
+        w = b.v.y < 0 ? 1 : 0.5;
+        px = b.p.x;
+        py = b.p.y;
+        pz = b.p.z;
+      } else {
+        const tt = s.plan.at - this.time;
+        const k = clamp(1 - Math.abs(tt) / ASSIST_WINDOW, 0, 1);
+        w = k * k * (3 - 2 * k);
+        // Far out: where the ball will be at contact; close in: where it is now.
+        const f = clamp(tt / 0.15, 0, 1);
+        px = lerp(b.p.x, s.plan.p.x, f);
+        py = lerp(b.p.y, s.plan.p.y, f);
+        pz = lerp(b.p.z, s.plan.p.z, f);
+      }
+      // The strings' centre as aimed now, without any assist.
+      const h = s.frame.head;
+      tx = (px - (h.x - A.x)) * ASSIST_GAIN * w;
+      ty = (py - (h.y - A.y)) * ASSIST_GAIN * w;
+      tz = (pz - (h.z - A.z)) * ASSIST_GAIN * w;
+      const len = Math.hypot(tx, ty, tz);
+      if (len > ASSIST_MAX) {
+        tx *= ASSIST_MAX / len;
+        ty *= ASSIST_MAX / len;
+        tz *= ASSIST_MAX / len;
+      }
+      ty = Math.max(ty, -0.45); // crouch at most this far
+      rate = 16;
+    }
+    const k = ease(dt, rate);
+    A.x += (tx - A.x) * k;
+    A.y += (ty - A.y) * k;
+    A.z += (tz - A.z) * k;
   }
 
   update(dt) {
@@ -533,10 +624,14 @@ export class TennisGame extends BaseGame {
     // ---- racket heads (1:1) ----
     for (const s of this.sides) {
       if (!s.fp) continue;
+      this._updateAssist(s, dt);
       const h = this._headFor(s);
       s.prevHead = s.head || h.head;
       s.head = h.head;
       s.frame = h;
+      // The same without the assist: the racket's own motion (your swing), for its speed at contact.
+      s.prevRaw = s.raw || { x: h.head.x - s.assist.x, y: h.head.y - s.assist.y, z: h.head.z - s.assist.z };
+      s.raw = { x: h.head.x - s.assist.x, y: h.head.y - s.assist.y, z: h.head.z - s.assist.z };
     }
 
     // ---- ball (sub-stepped so a fast racket cannot pass through it) ----
@@ -572,7 +667,7 @@ export class TennisGame extends BaseGame {
             const d = Math.hypot(b.p.x - hx, b.p.y - hy, b.p.z - hz);
             s.closest = Math.min(s.closest, d);
             if (d < c.hitRadius) {
-              const vel = { x: (s.head.x - s.prevHead.x) / dt, y: (s.head.y - s.prevHead.y) / dt, z: (s.head.z - s.prevHead.z) / dt };
+              const vel = { x: (s.raw.x - s.prevRaw.x) / dt, y: (s.raw.y - s.prevRaw.y) / dt, z: (s.raw.z - s.prevRaw.z) / dt };
               const vm = Math.hypot(vel.x, vel.y, vel.z);
               if (vm > 45) for (const key of ['x', 'y', 'z']) vel[key] *= 45 / vm;
               const sweet = clamp(1 - d / c.hitRadius, 0, 1);
@@ -621,6 +716,7 @@ export class TennisGame extends BaseGame {
     for (const s of this.sides) {
       s.cooldown -= dt;
       s.swingT += dt;
+      if (s.serveT !== undefined) s.serveT += dt;
       if (s.plan && this.state === 'rally' && b.live && b.hitter !== s.i) {
         if (!this.isHuman(s.i) && this.time >= s.plan.at - 0.01) {
           const near = Math.hypot(b.p.x - s.x - s.sign * 0.8, b.p.z - s.z) < 2.4 && b.p.y < 3;
@@ -643,21 +739,23 @@ export class TennisGame extends BaseGame {
       if (this.state === 'point' && dist < 0.05) s.target = { x: s.x * 0.5, z: s.sign * (LEN / 2 + 0.6) };
       // pose
       const g = s.char.group;
-      g.position.set(s.x, Math.abs(Math.sin(this.time * 9)) * (dist > 0.3 && this.state === 'rally' ? 0.06 : 0), s.z);
+      const run = Math.abs(Math.sin(this.time * 9)) * (dist > 0.3 && this.state === 'rally' ? 0.06 : 0);
       const oneToOne = !!(s.fp && s.frame && s.frame.real);
       if (oneToOne) {
+        // The body goes where the reach assist takes the arm (a lunge / crouch toward the ball).
+        const A = s.assist;
+        g.position.set(s.x + A.x, run + Math.min(0, A.y) * 0.8, s.z + A.z);
         // Reach the Yardling's arm from its shoulder to the 1:1 racket's grip, so the racket is in its hand.
         // (Into the character's own frame: side 1 is turned round, and the whole body is scaled by SC.)
         const h = s.frame;
-        _arm.set((h.hand.x - h.sh.x) * s.sign, h.hand.y - h.sh.y, (h.hand.z - h.sh.z) * s.sign);
+        _arm.set((h.hand.x - h.sh.x) * s.sign, h.hand.y - h.sh.y - Math.min(0, A.y) * 0.2, (h.hand.z - h.sh.z) * s.sign);
         const len = _arm.length() || 1;
         s.char.armR.quaternion.setFromUnitVectors(DOWN, _arm.multiplyScalar(1 / len));
         s.char.armR.scale.y = clamp(len / ARM_LEN, 0.6, 1.4);
+        s.char.rig.rotation.y = 0;
       } else {
-        s.char.armR.scale.y = 1;
-        s.char.armR.rotation.x = s.swingT < 0.28 ? lerp(-1.1, 2.3, s.swingT / 0.28) : lerp(s.char.armR.rotation.x, 0.5, ease(dt, 9));
-        s.char.armR.rotation.y = 0;
-        s.char.armR.rotation.z = 0.5;
+        g.position.set(s.x, run, s.z);
+        this._strokePose(s, dt);
       }
       // One racket per player: the 1:1 racket when the phone drives it, else the one in the hand.
       s.prop.visible = !oneToOne;
@@ -670,6 +768,97 @@ export class TennisGame extends BaseGame {
     if ((this.state === 'rally' || this.state === 'point') && Math.hypot(b.v.x, b.v.y, b.v.z) > 9) this.trail.push(b.p.x, b.p.y, b.p.z);
     else this.trail.fade();
     this._cameras(dt);
+  }
+
+  /**
+   * The CPU's (and keyboard player's) stroke, animated so the racket head lands exactly on the ball at the
+   * moment of contact: ready stance → backswing with a shoulder turn as the ball comes → an accelerating
+   * swing through the contact point → follow-through finishing high → back to ready. The arm is aimed by
+   * direction (like the 1:1 racket), so the racket in the hand reaches the planned contact point.
+   */
+  _strokePose(s, dt) {
+    const ch = s.char;
+    const f = s.sign;
+    const st = s.stroke;
+    // Everything below is in the character's own frame (side 1 is turned round).
+    let blend = 0; // 0 = ready stance, 1 = on the stroke path
+    let alpha = 0; // swing angle around the body: <0 backswing, 0 contact, >0 follow-through
+    let lift = 0; // extra upward finish
+    let reach = 1;
+    if (this.state === 'toss' && this.match.server === s.i) {
+      // Serve: racket up behind the head while the ball goes up.
+      _sw.set(0.25, 0.75, 0.6).normalize();
+      blend = -1;
+    } else if (s.serveT !== undefined && s.serveT < 0.6) {
+      blend = -1;
+    }
+    if (blend === 0 && st) {
+      const u = this.time - st.at;
+      if (u < -0.6) blend = 0;
+      else if (u < -0.2 || (!st.commit && u < 0.3)) {
+        // Backswing: turn the shoulders and take the racket back as the ball comes.
+        const k = smoothstep((u + 0.6) / 0.4);
+        blend = k;
+        alpha = -1.5 * k;
+      } else if (!st.commit) {
+        blend = smoothstep(1 - (u - 0.3) / 0.4);
+        alpha = -1.5;
+      } else if (u < 0) {
+        // The swing: accelerating into the ball.
+        const k = (u + 0.2) / 0.2;
+        blend = 1;
+        alpha = -1.5 * (1 - k * k);
+      } else if (u < 0.28) {
+        // Follow-through: decelerating across the body, finishing high.
+        const k = u / 0.28;
+        blend = 1;
+        alpha = 1.9 * (1 - (1 - k) * (1 - k));
+        lift = 0.55 * k;
+      } else if (u < 0.85) {
+        blend = smoothstep(1 - (u - 0.45) / 0.4);
+        alpha = 1.9;
+        lift = 0.55;
+      }
+    }
+    // Ready stance: racket in front, head up a little.
+    _rd.set(0.45, -0.35, -0.82).normalize();
+    let dir;
+    if (blend === -1) {
+      // Serve: from behind the head, over the top and down across the body after the hit.
+      const t = s.serveT ?? 9;
+      if (this.state === 'toss' && this.match.server === s.i) dir = _sw;
+      else if (t < 0.1) dir = _tmp.set(0.25, 0.75, 0.6).lerp(_tmp2.set(0.2, 0.85, -0.5), t / 0.1).normalize();
+      else if (t < 0.35) dir = _tmp.set(0.2, 0.85, -0.5).lerp(_tmp2.set(-0.45, -0.6, -0.55), (t - 0.1) / 0.25).normalize();
+      else dir = _tmp.set(-0.45, -0.6, -0.55).lerp(_rd, smoothstep((t - 0.35) / 0.25)).normalize();
+    } else if (blend > 0) {
+      // Where the ball will be, from this shoulder, in this body's frame.
+      const shx = s.x + SH_X * f;
+      // In the last instant before contact, aim at the ball itself (frames don't land exactly on the plan).
+      const b = this.ball;
+      const near = b.live && b.hitter !== s.i && st.commit ? smoothstep(1 - Math.abs(this.time - st.at) / 0.12) : 0;
+      _c.set((lerp(st.p.x, b.p.x, near) - shx) * f, lerp(st.p.y, b.p.y, near) - SH_Y, (lerp(st.p.z, b.p.z, near) - s.z) * f);
+      reach = _c.length() / (0.91 * SC); // the prop racket's strings sit 0.91 (scaled) from the shoulder
+      _c.normalize();
+      // Swing around the vertical: forehand swings back toward +z, backhand mirrored.
+      const beta = (st.forehand ? 1 : -1) * alpha;
+      _c.applyAxisAngle(UP, beta);
+      _c.y = clamp(_c.y + lift, -0.95, 0.95);
+      _c.normalize();
+      dir = _tmp.copy(_rd).lerp(_c, blend).normalize();
+      reach = lerp(1, clamp(reach, 0.65, 1.3), blend);
+    } else dir = _rd;
+    // A shoulder turn that follows the swing (the arm direction is corrected for it below).
+    const turn = blend > 0 ? (st.forehand ? 1 : -1) * alpha * 0.28 * blend : 0;
+    ch.rig.rotation.y = lerp(ch.rig.rotation.y, turn, ease(dt, 20));
+    _tmp2.copy(dir).applyAxisAngle(UP, -ch.rig.rotation.y);
+    // Smooth the arm toward its target pose (fast enough not to lag the swing, slow enough to never pop).
+    _q1.setFromUnitVectors(DOWN, _tmp2);
+    ch.armR.quaternion.slerp(_q1, ease(dt, blend > 0.9 || blend === -1 ? 40 : 14));
+    ch.armR.scale.y = lerp(ch.armR.scale.y, reach, ease(dt, 20));
+    // The free arm balances the swing.
+    const b01 = Math.max(0, blend);
+    ch.armL.rotation.x = lerp(ch.armL.rotation.x, blend === -1 ? 2.4 : 0.7 + 0.5 * b01 * (alpha < 0 ? 1 : 0.2), ease(dt, 10)); // serve: the tossing arm points up
+    ch.armL.rotation.z = lerp(ch.armL.rotation.z, -0.35 - 0.3 * b01, ease(dt, 10));
   }
 
   _placeFp(s) {

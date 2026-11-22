@@ -375,6 +375,17 @@ export class GolfGame extends BaseGame {
       const a = pts[i0];
       const b = pts[i1];
       this.ballPos.set(lerp(a.x, b.x, u), lerp(a.y, b.y, u) + 0.11, lerp(a.z, b.z, u));
+      // A thump each time the ball comes down (louder the faster it drops).
+      if (!s.putting) {
+        for (let k = Math.max(1, (s.lastK ?? 0) + 1); k <= i0; k++) {
+          if (pts[k - 1].y > 0 && pts[k].y === 0) {
+            const drop = clamp(pts[k - 1].y / step / 25, 0.15, 1);
+            this.sfx.thud();
+            if (drop > 0.5) this.feel.shake(0.05 * drop);
+          }
+        }
+        s.lastK = i0;
+      }
       if (!s.putting && i0 !== s.drawn) {
         s.drawn = i0;
         const attr = this.trail.geometry.attributes.position;

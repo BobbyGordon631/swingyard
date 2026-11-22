@@ -208,3 +208,39 @@ test('swings report their direction (jab vs hook, slash left/right/down)', async
   assert.ok(swingWith({ up: true }).move.y > 0.9);
   assert.ok(down.move.y < -0.9);
 });
+
+test('golf: the ball bounces after it lands, then rolls, and lands steeper with the short clubs', () => {
+  const cfg = CONFIG.golf;
+  const landing = (club) => {
+    const r = simulateShot({ hole: HOLES[2], pos: [0, 0], aim: 0, club, power: 1, cfg });
+    let i = 1;
+    while (i < r.points.length && r.points[i].y > 0) i++;
+    const hop = r.points.slice(i + 1).some((p) => p.y > 0.05);
+    const a = r.points[i - 1];
+    const b = r.points[i];
+    const angle = Math.atan2(a.y - b.y, Math.hypot(a.x - b.x, a.z - b.z));
+    return { r, hop, angle, runOut: -r.end[1] - r.carry };
+  };
+  const driver = landing(0);
+  assert.ok(driver.hop, 'the drive hops after touchdown');
+  assert.ok(driver.runOut > 8 && driver.runOut < 60, `driver ran out ${driver.runOut} m`);
+  const wedge = landing(4);
+  assert.ok(wedge.angle > driver.angle, 'a wedge comes down steeper than a driver');
+  assert.ok(wedge.runOut < driver.runOut, 'and stops quicker');
+});
+
+test('golf: a ball landing in a bunker stays there (no bounce out of sand)', () => {
+  const cfg = CONFIG.golf;
+  const h = HOLES[0];
+  const [sx, sz] = h.sand[0];
+  // Find a power that drops a wedge into the first bunker, then check it never leaves the sand.
+  for (let p = 0.3; p <= 1; p += 0.01) {
+    const r = simulateShot({ hole: h, pos: [sx, sz + 60], aim: 0, club: 4, power: p, cfg });
+    let i = 1;
+    while (i < r.points.length && r.points[i].y > 0) i++;
+    if (lieAt(h, r.points[i].x, r.points[i].z) !== 'sand') continue;
+    assert.equal(r.lie, 'sand');
+    return;
+  }
+  assert.ok(false, 'no power landed in the bunker');
+});

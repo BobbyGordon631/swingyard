@@ -10,7 +10,7 @@
 import * as THREE from 'three';
 import { CONFIG } from '../../config.js';
 import { createCharacter, addProp, react as charReact } from '../../characters.js';
-import { BaseGame, outdoorScene, blobShadow, patch, flatMat, addGrandstand, addBanner, renderViews, makeTrail, followSun, crowdFill, lerp, clamp, rand, ease } from '../common.js';
+import { BaseGame, outdoorScene, blobShadow, patch, flatMat, addGrandstand, addBanner, renderViews, makeTrail, followSun, crowdFill, ghost, lerp, clamp, rand, ease } from '../common.js';
 import { advance, walk, battedBall, fieldPlay, BASES, MOUND, FENCE, POSITIONS } from './rules.js';
 
 const PITCHES = {
@@ -22,6 +22,23 @@ const PITCHES = {
 const KB_ORDER = ['fast', 'curve', 'split', 'screw'];
 const PLATE_Z = 0;
 const CATCH_Z = 1.25;
+// The batter's box (right-handed batter, left of the plate from the catcher's view) and the bat.
+const BATTER_X = -0.85;
+const BATTER_Z = 0.2;
+const BAT_REACH = 1.11; // shoulder to the bat's sweet spot
+const UP = new THREE.Vector3(0, 1, 0);
+const DOWN = new THREE.Vector3(0, -1, 0);
+const STANCE = new THREE.Vector3(-0.25, 0.85, 0.45).normalize(); // bat up behind the head (world)
+const R_SHOULDER = new THREE.Vector3(0.31, 0.95, 0);
+const L_SHOULDER = new THREE.Vector3(-0.31, 0.95, 0);
+const _bs = new THREE.Vector3();
+const _bc = new THREE.Vector3();
+const _bz = new THREE.Vector3();
+const _bd = new THREE.Vector3();
+const _bl = new THREE.Vector3();
+const _bh = new THREE.Vector3();
+const _bq = new THREE.Quaternion();
+const smoothstep = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
 const HOME = [0, 0];
 const BASE_RING = [HOME, ...BASES.slice(0, 3), HOME]; // home -> 1st -> 2nd -> 3rd -> home
 
@@ -56,7 +73,7 @@ export class BaseballGame extends BaseGame {
     this.sun = sun;
     this.camPlay = camera;
     this.camera = camera;
-    this.camBat = new THREE.PerspectiveCamera(36, 1, 0.1, 900);
+    this.camBat = new THREE.PerspectiveCamera(46, 1, 0.1, 900); // wide enough for the whole batter in half a screen
     this.camPitch = new THREE.PerspectiveCamera(40, 1, 0.1, 900);
 
     const dirt = patch(scene, new THREE.PlaneGeometry(30, 30), 0xd9a871, 0.01, 0, -19.4);
@@ -142,6 +159,8 @@ export class BaseballGame extends BaseGame {
     });
     this.pitcher = this.fielders[0];
     this.catcher = this.fielders[1];
+    // In the batter's view the catcher crouches right in front of the camera: draw them see-through there.
+    this.ghostCatcher = ghost(this.catcher.group, 0.25);
     this.umpire = mk(null, 0x2b3550);
     this.umpire.group.position.set(1.7, 0, CATCH_Z + 0.9); // off to the side, out of the batter's view
     this.umpire.group.rotation.y = Math.PI;
@@ -276,7 +295,12 @@ export class BaseballGame extends BaseGame {
     const team = this.owner(source);
     if (team > 1 || !this.isHuman(team) || this.over) return;
     // The bat starts moving the instant the phone does; the pitcher locks in where they pointed.
-    if (team === this.batting && this.state === 'pitch' && !this.pitch.swung) this.swingT = 0;
+    if (team === this.batting && this.state === 'pitch' && !this.pitch.swung) {
+      this.swingT = 0;
+      // The body's swing aims to reach the plate as the ball does (re-timed when the swing peaks).
+      const p = this.pitch;
+      this.batSwing = { at: this.time + Math.max(0.12, (1 - p.u) * p.T) };
+    }
     if (team === this.pitching && this.state === 'ready') this._aimLock = { x: source.aim.x, y: source.aim.y, type: this._pitchType(source) };
   }
 
@@ -297,10 +321,16 @@ export class BaseballGame extends BaseGame {
       this.sfx.whoosh(swing.power);
       // Seconds between the swing's peak and the ball crossing the plate (negative = early).
       const errS = -((1 - p.u) * p.T + (performance.now() - swing.tPeak) / 1000);
+      const tCross = this.time + (1 - p.u) * p.T;
       if (Math.abs(errS) <= this.cfg.batWindowS && Math.abs(p.end.x) < 0.75 && p.end.y > 0.2 && p.end.y < 1.65) {
         const lift = clamp((swing.move?.y ?? 0) * 2.2, -1, 1);
         p.contact = { err: errS / this.cfg.batWindowS, power: swing.power, lift };
+        // Good timing: the bat meets the ball as it crosses the plate (or right now, if just late).
+        this.batSwing = { at: Math.max(this.time + 0.02, tCross), hit: true };
         if (p.u >= 1) this._contact();
+      } else {
+        // A miss: the swing goes through where you swung, ahead of or behind the ball.
+        this.batSwing = { at: this.time + 0.06, hit: false };
       }
       const when = Math.abs(errS) < 0.03 ? 'right on time' : errS < 0 ? `${Math.round(-errS * 1000)} ms early` : `${Math.round(errS * 1000)} ms late`;
       this.last(`Swing ${when} · power ${Math.round(swing.power * 100)}%`);
@@ -335,6 +365,9 @@ export class BaseballGame extends BaseGame {
     const p = this.pitch;
     if (p.resolved) return;
     p.resolved = true;
+    // Pin the swing to this instant and to where the ball is now, so the bat is on the ball in this frame.
+    if (this.batSwing) this.batSwing.at = this.time;
+    this._lastCross = this.ball.clone();
     const react = this.isHuman(this.pitching) ? this.cfg.ai[1].react : this.ai.react;
     const hit = battedBall({ ...p.contact, inZone: p.strike });
     const res = fieldPlay({ hit, react, fielderSpeed: this.cfg.fielderSpeed, runnerSpeed: this.cfg.runnerSpeed, throwSpeed: this.cfg.throwSpeed, bases: this.bases, outs: this.outs });
@@ -628,7 +661,11 @@ export class BaseballGame extends BaseGame {
       const u = p.u;
       if (u <= 1) this.ball.copy(p.start).lerp(p.end.clone().sub(p.brk), u).addScaledVector(p.brk, u * u);
       else this.ball.set(p.end.x * 0.6, lerp(p.end.y, 0.8, clamp((u - 1) * 3, 0, 1)), lerp(PLATE_Z, CATCH_Z, clamp((u - 1) * p.T / 0.12, 0, 1)));
-      if (!p.resolved && p.aiSwing && u > 1 - 0.12 / p.T && this.swingT > 1) this.swingT = 0;
+      if (!p.resolved && p.aiSwing && u > 1 - 0.2 / p.T && this.swingT > 1) {
+        this.swingT = 0;
+        // The CPU swings so the bat arrives with the ball (a hit) or just off it (a miss).
+        this.batSwing = { at: this.time + (1 - u) * p.T + (p.contact ? 0 : rand(-0.09, 0.09)), hit: !!p.contact };
+      }
       if (u >= 1 && !p.resolved) {
         if (p.contact) this._contact();
         else if (u >= 1 + 0.25 / p.T) {
@@ -646,11 +683,13 @@ export class BaseballGame extends BaseGame {
     if (this.state === 'pitch' || (this.state === 'play' && this.ball.y > 0.3)) this.trail.push(this.ball.x, this.ball.y, this.ball.z);
     else this.trail.fade();
     const inPlay = this.state === 'play' || (this.state === 'call' && this.play);
-    if (!inPlay) {
-      this.batter.group.position.set(-0.85, 0, 0.2);
-      this.batter.group.rotation.y = -Math.PI / 2 + (this.swingT < 0.35 ? -1.6 * Math.sin((this.swingT / 0.35) * Math.PI * 0.5) : 0.15);
-      this.batter.armR.rotation.x = this.swingT < 0.25 ? lerp(-0.4, 2.6, this.swingT / 0.25) : lerp(this.batter.armR.rotation.x, 2.2, ease(dt, 6));
-      this.batter.armR.rotation.z = 0.9;
+    // The swing follows through from the batter's box for a moment before they set off for first.
+    if (!inPlay || (this.play && this.play.t < 0.55)) this._batPose(dt);
+    else {
+      // Running the bases: drop the batting stance.
+      this.batter.rig.rotation.y = 0;
+      this.batter.armR.scale.y = 1;
+      this.batter.armL.scale.y = 1;
     }
     const pa = this.pitcher.armR;
     if (this.state === 'windup') {
@@ -667,8 +706,10 @@ export class BaseballGame extends BaseGame {
     this.zone.visible = this.split;
 
     // ---- cameras ----
-    this.camBat.position.set(0.2, 2.1, 4.6); // high enough to look over the catcher and umpire
-    this.camBat.lookAt(0, 1.05, -MOUND);
+    // Behind the catcher, over their head, shifted toward the batter and aimed between batter and mound,
+    // so the whole batter (and their swing) is in the half-screen along with the pitch on its way.
+    this.camBat.position.set(0.05, 2.05, 4.5);
+    this.camBat.lookAt(-0.45, 1.0, -MOUND);
     this.camPitch.position.set(this.pitcherX + 1.0, 2.4, -MOUND - 4.8);
     this.camPitch.lookAt(0, 0.9, 0);
     if (inPlay) {
@@ -702,11 +743,97 @@ export class BaseballGame extends BaseGame {
     this.divider.classList.toggle('hidden', !this.split);
   }
 
+  /**
+   * The batter. With a phone (3D orientation) the bat follows it 1:1, and in the last instant before the
+   * plate an assist swings it onto the ball so a hit is the bat really meeting the ball. Otherwise (CPU,
+   * keyboard) a stroke is animated so the bat's sweet spot reaches the ball exactly as it crosses the plate:
+   * stance → load → accelerating swing → follow-through wrapping round → back to the stance.
+   * Two hands on the bat: the left arm always reaches for the right hand.
+   */
+  _batPose(dt) {
+    const ch = this.batter;
+    ch.group.position.set(BATTER_X, 0, BATTER_Z);
+    ch.group.rotation.y = -Math.PI / 2; // facing the plate (+x); the pitcher is on their left
+    const p = this.state === 'pitch' ? this.pitch : null;
+    // Right shoulder in the world (the batter's right is toward the catcher, +z).
+    _bs.set(BATTER_X, 0.95, BATTER_Z + 0.31);
+    // Where bat and ball meet: the plate crossing, or the middle of the zone between pitches.
+    if (p) this._lastCross = p.end;
+    _bc.copy(p ? p.end : this._lastCross || _bz.set(0, 0.85, PLATE_Z)).sub(_bs);
+    const dist = _bc.length();
+    _bc.normalize();
+    const tCross = p ? this.time + (1 - p.u) * p.T : Infinity;
+    const pose = this.isHuman(this.batting) ? this.pose(this.batting) : null;
+    let reach = 1;
+    let rate = 40;
+    let turn = 0;
+    if (pose && pose.real) {
+      // 1:1: the phone is the bat (TV frame = world frame here: the screen is toward the pitcher).
+      const pt = pose.basis.point;
+      _bd.set(pt.x, pt.y, pt.z);
+      if (p && !p.resolved) {
+        const tt = tCross - this.time;
+        const hot = p.contact ? 1 : this.swingT < 0.35 ? 0.55 : 0;
+        const w = hot * smoothstep(1 - Math.abs(tt) / 0.12);
+        if (w > 0) {
+          _bd.lerp(_bc, w).normalize();
+          reach = lerp(1, clamp(dist / BAT_REACH, 0.7, 1.3), w);
+        }
+      }
+      rate = 60;
+      // Hips follow the bat round.
+      turn = clamp(Math.atan2(_bd.z, _bd.x) - Math.atan2(_bc.z, _bc.x), -1.2, 1.2) * -0.3;
+    } else {
+      const sw = this.batSwing;
+      const u = sw ? this.time - sw.at : 9;
+      let alpha = null; // swing angle around the body: -2 loaded, 0 at the ball, +1.8 wrapped round
+      let up = 0;
+      let blend = 1;
+      if (u < -0.15) alpha = null;
+      else if (u < 0) {
+        const k = (u + 0.15) / 0.15;
+        alpha = -2.0 * (1 - k * k);
+        up = 0.7 * (1 - k) * (1 - k);
+        reach = lerp(1, clamp(dist / BAT_REACH, 0.7, 1.3), k);
+      } else if (u < 0.3) {
+        const k = u / 0.3;
+        alpha = 1.8 * (1 - (1 - k) * (1 - k));
+        up = 0.5 * k;
+        reach = lerp(clamp(dist / BAT_REACH, 0.7, 1.3), 1, k);
+      } else if (u < 0.85) {
+        alpha = 1.8;
+        up = 0.5;
+        blend = smoothstep(1 - (u - 0.45) / 0.4);
+      }
+      if (alpha === null) _bd.copy(STANCE);
+      else {
+        _bd.copy(_bc).applyAxisAngle(UP, alpha);
+        _bd.y += up;
+        _bd.normalize();
+        if (blend < 1) _bd.lerp(STANCE, 1 - blend).normalize();
+        turn = -alpha * 0.28 * blend;
+      }
+    }
+    // Torso turn, then the arm in the batter's own frame (world -> local for a body turned -90 degrees,
+    // then undo the torso turn, since the arms ride on it).
+    ch.rig.rotation.y = lerp(ch.rig.rotation.y, turn, ease(dt, 18));
+    _bl.set(_bd.z, _bd.y, -_bd.x).applyAxisAngle(UP, -ch.rig.rotation.y);
+    _bq.setFromUnitVectors(DOWN, _bl);
+    ch.armR.quaternion.slerp(_bq, ease(dt, rate));
+    ch.armR.scale.y = lerp(ch.armR.scale.y, reach, ease(dt, 20));
+    // Left hand on the bat, just above the right: reach the left arm to where the right hand is.
+    _bh.set(0, -0.44 * ch.armR.scale.y, 0).applyQuaternion(ch.armR.quaternion).add(R_SHOULDER);
+    _bh.sub(L_SHOULDER);
+    const lLen = _bh.length() || 1;
+    ch.armL.quaternion.setFromUnitVectors(DOWN, _bh.multiplyScalar(1 / lLen));
+    ch.armL.scale.y = clamp(lLen / 0.44, 0.5, 1.6);
+  }
+
   render(renderer, W, H) {
     if (this.split) {
       renderViews(renderer, this.scene, W, H, [
-        { camera: this.camBat, x: 0, y: 0, w: 0.5, h: 1 },
-        { camera: this.camPitch, x: 0.5, y: 0, w: 0.5, h: 1 },
+        { camera: this.camBat, x: 0, y: 0, w: 0.5, h: 1, before: () => this.ghostCatcher(true) },
+        { camera: this.camPitch, x: 0.5, y: 0, w: 0.5, h: 1, before: () => this.ghostCatcher(false) },
       ]);
     } else {
       renderViews(renderer, this.scene, W, H, [{ camera: this.camPlay, x: 0, y: 0, w: 1, h: 1 }]);

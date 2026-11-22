@@ -13,9 +13,6 @@ import { clamp } from '../../motion/filter.js';
 import { createCharacter, react, PLAYER_COLORS, PLAYER_CSS } from '../../characters.js';
 import { envMap, feel } from '../common.js';
 
-// Strike streak calls: the more in a row, the bigger the word.
-const STREAK = ['STRIKE!', 'DOUBLE!', 'TURKEY!'];
-const streakName = (n) => STREAK[n - 1] || `${n}-BAGGER!`;
 const TRAIL_MAX = 1024; // ball path points (one every 40 ms of roll)
 // Camera behind the bowler: far enough back and high enough to see the whole body and the swing,
 // like a broadcast shot from behind the approach.
@@ -24,6 +21,7 @@ const CAM_UP = 2.85;
 const REACT_CUT_S = 0.85; // after a strike / spare, cut to the bowler this long after the pins settle
 import { BowlingPhysics, DIM, pinHomes, PIT_Z, SWEEP_FRONT, pinRadiusAt } from './physics.js';
 import { boardAt, BOARDS } from './oil.js';
+import { AlleyScreen } from './alleyScreen.js';
 import { Scorecard, isSplit } from './scoring.js';
 
 const L = DIM.laneLength;
@@ -93,6 +91,7 @@ export class BowlingGame {
 
     this._buildScene();
     this._buildHud();
+    this.alley = new AlleyScreen(this.hud, this.sfx); // the cartoon celebrations on the alley monitor
     this._startTurn(true);
   }
 
@@ -691,6 +690,14 @@ export class BowlingGame {
   }
 
   onButton(source, name, down) {
+    // A or the trigger skips the alley-monitor cartoon (straight to the bowler's celebration, or the next ball).
+    if (down && (name === 'a' || name === 'hold') && this.state === 'result' && this.alley.playing && this.stateT > 0.3) {
+      this.alley.skip();
+      const left = this.resultHold - this.reactAt;
+      this.reactAt = Math.min(this.reactAt, this.stateT);
+      this.resultHold = this.reactShot ? this.reactAt + left : Math.min(this.resultHold, this.stateT + 0.2);
+      return;
+    }
     if (name !== 'hold' || !this.input.isFor(source, this.cur)) return;
     if (down && this.state === 'aim' && this.stateT > 0.25) {
       this.lockedAngle = this.aimAngle; // the arm swing moves the phone; keep the line you chose
@@ -801,35 +808,43 @@ export class BowlingGame {
     this.reactShot = null;
     this.reacted = false;
     this.resultHold = 1.4;
+    this.reactAt = REACT_CUT_S;
+    // The alley monitor plays its cartoon first; then (strikes and spares) the cut to the bowler celebrating.
+    const cartoon = (kind, opts) => {
+      const dur = this.alley.play(kind, { player: this.cur, ...opts });
+      this.reactAt = dur + 0.1;
+      this.resultHold = dur + 0.3;
+    };
     if (down === 10 && firstBall) {
       p.streak++;
       const n = p.streak;
-      feel.celebrate(streakName(n), { color: n >= 3 ? '#ffd166' : '#ff6b4a', size: n >= 2 ? 'huge' : 'big', confetti: n >= 3 ? 120 : n === 2 ? 50 : 0 });
+      cartoon('strike', { streak: n });
       this.sfx.strike();
-      this.sfx.sparkle(n - 1);
       this.sfx.crowdCheer(Math.min(1, 0.75 + n * 0.1));
       holder?.vibrate([80, 60, 80, 60, 220]);
-      // Cut to the bowler celebrating, the way a TV broadcast would.
+      // Then cut to the bowler celebrating, the way a TV broadcast would.
       this.reactShot = 'cheer';
-      this.resultHold = 2.7;
+      this.resultHold = this.reactAt + 1.5;
     } else if (down === before.pinsUp) {
       p.streak = 0;
-      feel.celebrate('SPARE!', { color: '#2ec4b6', size: 'big' });
+      cartoon('spare');
       this.sfx.spare();
-      this.sfx.sparkle(0);
       this.sfx.crowdCheer(0.6);
       holder?.vibrate([80, 60, 160]);
       this.reactShot = 'pump';
-      this.resultHold = 2.4;
+      this.resultHold = this.reactAt + 1.2;
     } else if (down === 0) {
       p.streak = 0;
-      this._banner(gutter ? 'Gutter ball' : 'Miss', 1.8);
+      if (gutter) cartoon('gutter');
+      else if (before.pinsUp === 10) cartoon('miss');
+      else this._banner('Miss', 1.8);
       this.sfx.miss();
       this.sfx.crowdGroan(gutter ? 0.7 : 0.5);
       react(this.chars[this.cur], 'sad');
     } else if (split) {
       p.streak = 0;
-      this._banner(`${standing.join('-')} split`, 2);
+      cartoon('split');
+      this._banner(`${standing.join('-')}`, this.resultHold, 'small');
       this.sfx.crowdOoh(0.6);
     } else {
       p.streak = 0;
@@ -970,7 +985,7 @@ export class BowlingGame {
       if (ph.state === 'done') this._ballDone();
     } else if (this.state === 'result') {
       ph.events.length = 0;
-      if (this.reactShot && !this.reacted && this.stateT > REACT_CUT_S) {
+      if (this.reactShot && !this.reacted && this.stateT > this.reactAt) {
         this.reacted = true;
         react(this.chars[this.cur], this.reactShot);
       }
@@ -980,6 +995,7 @@ export class BowlingGame {
       this._updateSweep();
     }
 
+    this.alley.update(dt);
     // Banner timer
     if (this.bannerT > 0) {
       this.bannerT -= dt;
@@ -1116,12 +1132,12 @@ export class BowlingGame {
     // Camera: behind the bowler on the approach, then down the lane with the ball, then on the deck.
     const cam = this.camera;
     let tx, ty, tz, lx, ly, lz;
-    const reactionShot = !!(this.reactShot && c && this.state === 'result' && this.stateT > REACT_CUT_S);
+    const reactionShot = !!(this.reactShot && c && this.state === 'result' && this.stateT > this.reactAt);
     if (reactionShot) {
       // Out in front of the bowler, looking back up the lane at them while they celebrate. A hard cut
       // in, then a slow push.
       const g = c.group.position;
-      const push = this.stateT - REACT_CUT_S;
+      const push = this.stateT - this.reactAt;
       tx = g.x + HAND_X * 0.5 - 0.35;
       ty = 1.05;
       tz = g.z - 2.9 + Math.min(push, 2) * 0.25;
@@ -1174,6 +1190,7 @@ export class BowlingGame {
 
   dispose() {
     this.sfx.rollStop();
+    this.alley.dispose();
     this.hud.innerHTML = '';
     for (const phone of this.input.phones) phone.setStatus('');
     this.scene.traverse((o) => {

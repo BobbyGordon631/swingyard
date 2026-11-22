@@ -348,6 +348,31 @@ export class Sfx {
     this.tone({ freq: base * 2, type: 'sine', dur: 0.5, gain: 0.06, delay: 0.22 });
   }
 
+  // ---- cartoon sounds (the bowling alley screen) ----
+  boing() {
+    this.tone({ freq: 180, to: 520, type: 'sine', dur: 0.25, gain: 0.18 });
+    this.tone({ freq: 520, to: 260, type: 'sine', dur: 0.2, gain: 0.1, delay: 0.2 });
+  }
+  /** A turkey's gobble: a quick wobbling warble. */
+  gobble() {
+    for (let i = 0; i < 6; i++) this.tone({ freq: 420 + (i % 2) * 160, to: 300 + (i % 2) * 120, type: 'sawtooth', dur: 0.06, gain: 0.07, delay: i * 0.06 });
+  }
+  /** A little whistled tune. */
+  tweet() {
+    [988, 1175, 1319, 1175, 988, 1319].forEach((f, i) => this.tone({ freq: f, to: f * 1.02, type: 'sine', dur: 0.14, gain: 0.08, delay: i * 0.16 }));
+  }
+  wind() {
+    this.noise({ dur: 1.0, gain: 0.08, type: 'bandpass', freq: 500, to: 900, q: 2 });
+  }
+  /** Wah, wah, wah, wahhh. */
+  sadTrombone() {
+    [[294, 0], [277, 0.32], [262, 0.64], [247, 0.96]].forEach(([f, d], i) => {
+      const dur = i === 3 ? 0.9 : 0.3;
+      this.tone({ freq: f, to: i === 3 ? f * 0.94 : f * 0.98, type: 'sawtooth', dur, gain: 0.08, delay: d });
+      this.tone({ freq: f / 2, type: 'triangle', dur, gain: 0.06, delay: d });
+    });
+  }
+
   /** A soft UI chime for skill level going up / down. */
   levelUp(up = true) {
     const seq = up ? [523, 659, 784, 1047] : [523, 466, 392];

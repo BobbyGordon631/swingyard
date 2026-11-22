@@ -23,7 +23,7 @@ export class PhoneSource extends InputSource {
    *        o:[alpha,beta,gamma]|null (deviceorientation, degrees), b:bitmask, ts: phone clock ms }
    */
   handleMessage(msg, now) {
-    if (typeof msg.b === 'number') {
+    if (typeof msg.b === 'number' && this._freshButtons(msg.bs)) {
       for (const [name, bit] of Object.entries(BUTTON_BITS)) this.setButton(name, msg.b & bit);
     }
     if (!msg.g && !msg.a) return; // button-only packet
@@ -47,6 +47,20 @@ export class PhoneSource extends InputSource {
     });
   }
 
+  /**
+   * Button presses arrive on the reliable channel; motion samples (which also carry the button bits) on an
+   * unordered one. `bs` counts button changes on the phone, so a late motion packet from before the latest
+   * press / release can't undo it. A big jump backwards means the phone page was reloaded.
+   */
+  _freshButtons(bs) {
+    if (typeof bs !== 'number') return true; // an older controller page
+    if (this._bs === undefined || bs >= this._bs || this._bs - bs > 50) {
+      this._bs = bs;
+      return true;
+    }
+    return false;
+  }
+
   vibrate(pattern) {
     this._send({ t: 'vibrate', p: this.slot, ms: pattern });
   }
@@ -60,6 +74,7 @@ export class PhoneSource extends InputSource {
   reset() {
     this._status = null;
     this._offset = undefined;
+    this._bs = undefined;
     for (const name of Object.keys(this.buttons)) this.setButton(name, false);
     this.detector.reset();
     this.tracker.reset();
